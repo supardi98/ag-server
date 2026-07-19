@@ -1,12 +1,19 @@
 <script setup lang="ts">
-defineProps<{ modelValue: boolean; disabled?: boolean }>();
+defineProps<{ 
+  modelValue: boolean; 
+  disabled?: boolean;
+  size?: 'sm' | 'md';
+}>();
 defineEmits<{ 'update:modelValue': [value: boolean] }>();
 </script>
 
 <template>
   <button
     class="toggle"
-    :class="{ 'toggle--on': modelValue, 'toggle--disabled': disabled }"
+    :class="[
+      { 'toggle--on': modelValue, 'toggle--disabled': disabled },
+      size === 'sm' ? 'toggle--sm' : 'toggle--md'
+    ]"
     :disabled="disabled"
     role="switch"
     :aria-checked="modelValue"
@@ -34,14 +41,42 @@ defineEmits<{ 'update:modelValue': [value: boolean] }>();
 }
 
 .toggle__track {
-  width: 52px;
-  height: 28px;
-  border-radius: 14px;
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid var(--border-color);
   position: relative;
-  transition: background var(--transition-base), border-color var(--transition-base);
+  transition: background 0.2s ease, border-color 0.2s ease;
   display: block;
+}
+
+/* Medium size (default) */
+.toggle--md .toggle__track {
+  width: 44px;
+  height: 24px;
+}
+.toggle--md .toggle__thumb {
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+}
+.toggle--md.toggle--on .toggle__thumb {
+  transform: translateX(20px);
+}
+
+/* Small size (ideal for compact toolbars/headers) */
+.toggle--sm .toggle__track {
+  width: 32px;
+  height: 18px;
+}
+.toggle--sm .toggle__thumb {
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+}
+.toggle--sm.toggle--on .toggle__thumb {
+  transform: translateX(14px);
 }
 
 .toggle--on .toggle__track {
@@ -51,17 +86,9 @@ defineEmits<{ 'update:modelValue': [value: boolean] }>();
 
 .toggle__thumb {
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 20px;
-  height: 20px;
   border-radius: 50%;
   background: white;
-  transition: transform var(--transition-base);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-}
-
-.toggle--on .toggle__thumb {
-  transform: translateX(24px);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 </style>

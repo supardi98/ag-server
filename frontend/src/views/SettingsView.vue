@@ -69,14 +69,9 @@ onMounted(() => {
 
 <template>
   <div class="settings-page">
-    <header class="app-header">
-      <div class="brand">
-        <span class="logo">🔮</span>
-        <h1>Settings</h1>
-      </div>
-      <div class="header-actions">
-        <AgButton variant="secondary" @click="router.push('/')">← Back to Dashboard</AgButton>
-      </div>
+    <header class="page-header">
+      <h2>Settings</h2>
+      <p class="subtitle">Konfigurasi file path executable, port debugging, dan password web.</p>
     </header>
 
     <main class="app-main">
@@ -143,39 +138,27 @@ onMounted(() => {
 
 <style scoped>
 .settings-page {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  padding: 32px;
 }
 
-.app-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 32px;
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border-bottom: 1px solid var(--glass-border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
+.page-header {
+  margin-bottom: 24px;
 }
 
-.brand { display: flex; align-items: center; gap: 12px; }
-.brand h1 {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-primary);
+.page-header h2 {
+  font-size: 24px;
+  font-weight: 700;
 }
-.logo { font-size: 24px; }
+
+.subtitle {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-top: 4px;
+}
 
 .app-main {
   flex: 1;
-  padding: 32px;
-  max-width: 600px;
   width: 100%;
-  margin: 0 auto;
 }
 
 .loading-state {
