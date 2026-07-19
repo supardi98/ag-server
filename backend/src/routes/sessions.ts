@@ -10,19 +10,21 @@ function getLanguageServerDetails(): { port: number; csrfToken: string } | null 
     const pgrepOutput = execSync('pgrep -f "language_server"').toString().split('\n').filter(Boolean);
     for (const pidStr of pgrepOutput) {
       const pid = parseInt(pidStr, 10);
+      if (isNaN(pid)) continue;
       try {
         const cmdLine = execSync(`ps -o args= -p ${pid}`).toString().trim();
         const csrfMatch = cmdLine.match(/--csrf_token\s+([a-f0-9-]+)/);
-        if (csrfMatch) {
-          // Find the TCP listening port for this pid using lsof
-          const lsofOutput = execSync(`lsof -iTCP -sTCP:LISTEN -P -n -p ${pid}`).toString();
-          const portMatch = lsofOutput.match(/:(\d+)\s+\(LISTEN\)/);
-          if (portMatch) {
-            return {
-              port: parseInt(portMatch[1], 10),
-              csrfToken: csrfMatch[1],
-            };
-          }
+        if (!csrfMatch) continue;
+
+        // Use -aTCP so lsof only returns this PID's own sockets
+        const lsofOutput = execSync(`lsof -a -iTCP -sTCP:LISTEN -P -n -p ${pid}`).toString();
+        // Find first port on 127.0.0.1
+        const portMatch = lsofOutput.match(/127\.0\.0\.1:(\d+)\s+\(LISTEN\)/);
+        if (portMatch) {
+          return {
+            port: parseInt(portMatch[1], 10),
+            csrfToken: csrfMatch[1],
+          };
         }
       } catch {
         // Ignore
@@ -77,60 +79,184 @@ function callLsApi(method: string, body: any = {}): Promise<any> {
   });
 }
 
+// Read Connect server-streaming response with a short timeout, return first frame
+function callLsStream(method: string, body: any = {}, timeoutMs = 5000): Promise<any[]> {
+  const details = getLanguageServerDetails();
+  if (!details) return Promise.reject(new Error('Language server not running'));
+
+  return new Promise((resolve, reject) => {
+    // Connect streaming uses 5-byte envelope framing
+    const payload = Buffer.from(JSON.stringify(body));
+    const envelope = Buffer.allocUnsafe(5 + payload.length);
+    envelope[0] = 0x00;
+    envelope.writeUInt32BE(payload.length, 1);
+    payload.copy(envelope, 5);
+
+    const chunks: Buffer[] = [];
+    const req = https.request(
+      {
+        hostname: '127.0.0.1',
+        port: details.port,
+        path: `/exa.language_server_pb.LanguageServerService/${method}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/connect+json',
+          'Connect-Protocol-Version': '1',
+          'X-Codeium-Csrf-Token': details.csrfToken,
+          'Content-Length': envelope.length,
+        },
+        timeout: timeoutMs,
+        rejectUnauthorized: false,
+      },
+      (res) => {
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve(decodeConnectFrames(Buffer.concat(chunks))));
+      }
+    );
+    req.on('timeout', () => { req.destroy(); resolve(decodeConnectFrames(Buffer.concat(chunks))); });
+    req.on('error', () => resolve(decodeConnectFrames(Buffer.concat(chunks))));
+    req.write(envelope);
+    req.end();
+  });
+}
+
+function decodeConnectFrames(buf: Buffer): any[] {
+  const frames: any[] = [];
+  let acc = buf;
+  while (acc.length >= 5) {
+    const flag = acc[0];
+    const len = acc.readUInt32BE(1);
+    if (acc.length < 5 + len) break;
+    const msg = acc.slice(5, 5 + len);
+    acc = acc.slice(5 + len);
+    if (flag !== 0x00) continue; // skip trailers
+    try { frames.push(JSON.parse(msg.toString())); } catch { }
+  }
+  return frames;
+}
+
+// --- In-memory cache for /api/projects ---
+interface ProjectsCache {
+  data: any;
+  fetchedAt: number;
+}
+let projectsCache: ProjectsCache | null = null;
+let isFetching = false;
+
+async function fetchProjectsData(): Promise<any> {
+  const [streamFrames, jetboxFrames] = await Promise.all([
+    callLsStream('ProjectUpdatesStream', {}, 5000),
+    callLsStream('JetboxSubscribeToSummaries', {}, 5000),
+  ]);
+
+  const firstFrame = streamFrames.find((f: any) => f.projectList?.projectIds);
+  const projectIds: string[] = firstFrame?.projectList?.projectIds || [];
+
+  const summaries: Record<string, any> = {};
+  for (const f of jetboxFrames) {
+    if (f.updates) Object.assign(summaries, f.updates);
+  }
+
+  const realIds = projectIds.filter(
+    (id) => id && id !== 'outside-of-project' && id !== 'default-cli-project'
+  );
+
+  const projectDetails = await Promise.all(
+    realIds.map(async (id) => {
+      try {
+        const r = await callLsApi('ReadProject', { id });
+        const p = r?.project;
+        if (!p) return null;
+        const folderUri = p.projectResources?.resources?.[0]?.gitFolder?.folderUri || '';
+        return { id, name: p.name || id, folderUri };
+      } catch {
+        return { id, name: id, folderUri: '' };
+      }
+    })
+  );
+
+  const projects = projectDetails
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+    .map((project) => {
+      const conversations = Object.entries(summaries)
+        .filter(([_, info]: [string, any]) => info?.trajectoryMetadata?.projectId === project.id)
+        .map(([id, info]: [string, any]) => ({
+          id,
+          title: info.summary || 'Untitled Conversation',
+          lastModifiedTime: info.lastModifiedTime,
+          status: info.status,
+        }))
+        .sort((a, b) => (b.lastModifiedTime || '').localeCompare(a.lastModifiedTime || ''));
+
+      return { id: project.id, name: project.name, folderUri: project.folderUri, conversations };
+    });
+
+  return { projects };
+}
+
+async function refreshCache(): Promise<void> {
+  if (isFetching) return;
+  isFetching = true;
+  try {
+    const data = await fetchProjectsData();
+    projectsCache = { data, fetchedAt: Date.now() };
+  } catch {
+    // keep old cache on error
+  } finally {
+    isFetching = false;
+  }
+}
+
+// Called once on server startup to warm the cache in background
+export function warmProjectsCache(): void {
+  refreshCache();
+}
 export async function sessionsRoutes(fastify: FastifyInstance) {
-  // GET /api/projects - Fetches projects list and groups their conversations
+  // GET /api/projects — stale-while-revalidate cache
   fastify.get(
     '/api/projects',
     {
       schema: {
-        description: 'Get list of projects and their conversations',
+        description: 'Get list of projects and their conversations (cached)',
         tags: ['projects'],
       },
       preHandler: requireAuth,
     },
-    async () => {
-      try {
-        // 1. Get all conversations/trajectories from LS
-        const summariesData = await callLsApi('GetAllCascadeTrajectories');
-        const trajectories = summariesData.trajectorySummaries || {};
-        
-        // 2. Fetch active projects list from workspaces info
-        const workspaceData = await callLsApi('GetWorkspaceInfos');
-        const workspaces = workspaceData.workspaceInfos || [];
-        
-        // Group trajectories by workspace uri
-        const projectsList = workspaces.map((ws: any) => {
-          const workspaceUri = ws.workspaceUri;
-          const decodedUri = decodeURIComponent(workspaceUri);
-          const name = decodedUri.replace(/\/+$/, '').split('/').pop() || 'workspace';
-          
-          const normalize = (u: string) => decodeURIComponent(u || '').toLowerCase().replace(/\/+$/, '');
-          const wsUriNorm = normalize(workspaceUri);
-          
-          // Filter trajectories that contain this workspace
-          const projectConversations = Object.entries(trajectories)
-            .filter(([_, info]: [string, any]) => {
-              const cascadeWsUris = (info.workspaces || []).map((w: any) => w.workspaceFolderAbsoluteUri);
-              return cascadeWsUris.some((uri: string) => normalize(uri) === wsUriNorm);
-            })
-            .map(([id, info]: [string, any]) => ({
-              id,
-              title: info.summary || 'Untitled Conversation',
-              lastModifiedTime: info.lastModifiedTime,
-            }));
-            
-          return {
-            name,
-            folderUri: workspaceUri,
-            conversations: projectConversations,
-          };
+    async (_req, reply) => {
+      // Block only if cache is completely empty (first ever request)
+      if (!projectsCache && !isFetching) {
+        await refreshCache();
+      } else if (!projectsCache && isFetching) {
+        // Warmup is in progress — wait for it
+        await new Promise<void>((resolve) => {
+          const check = setInterval(() => {
+            if (!isFetching) { clearInterval(check); resolve(); }
+          }, 200);
         });
-        
-        return { projects: projectsList };
-      } catch (err: any) {
-        fastify.log.error(err);
-        return { projects: [] };
       }
+      // Cache exists — return instantly with isRefreshing flag
+      const cachedAt = projectsCache?.fetchedAt
+        ? new Date(projectsCache.fetchedAt).toISOString()
+        : null;
+
+      return reply.send({
+        ...(projectsCache?.data ?? { projects: [] }),
+        cachedAt,
+        isRefreshing: isFetching,
+      });
+    }
+  );
+
+  // POST /api/projects/refresh — manual refresh, returns immediately
+  fastify.post(
+    '/api/projects/refresh',
+    { schema: { description: 'Trigger manual projects cache refresh', tags: ['projects'] }, preHandler: requireAuth },
+    async (_req, reply) => {
+      if (!isFetching) {
+        projectsCache = null;
+        refreshCache(); // fire and forget
+      }
+      return reply.send({ ok: true, isRefreshing: isFetching });
     }
   );
 
@@ -197,6 +323,103 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
         return reply.code(400).send(res);
       }
       return res;
+    }
+  );
+
+  // GET /api/conversations/:id/steps
+  fastify.get(
+    '/api/conversations/:id/steps',
+    {
+      schema: {
+        description: 'Get steps of a specific conversation with pagination',
+        tags: ['conversations'],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }
+          }
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            start: { type: 'number' },
+            end: { type: 'number' }
+          }
+        }
+      },
+      preHandler: requireAuth,
+    },
+    async (request) => {
+      const { id } = request.params as { id: string };
+      const { start, end } = request.query as { start?: number; end?: number };
+
+      if (start !== undefined && end !== undefined) {
+        return callLsApi('GetCascadeTrajectorySteps', {
+          cascadeId: id,
+          startIndex: start,
+          endIndex: end
+        });
+      }
+
+      // Default: Ambil 30 step terakhir untuk load cepat.
+      // Kita panggil GetAllCascadeTrajectories untuk cari stepCount total
+      let stepCount = 0;
+      try {
+        const trajData = await callLsApi('GetAllCascadeTrajectories');
+        const summary = trajData.trajectorySummaries?.[id];
+        if (summary && typeof summary.stepCount === 'number') {
+          stepCount = summary.stepCount;
+        }
+      } catch {
+        // Fallback jika gagal
+      }
+
+      const limit = 30;
+      const startIndex = Math.max(0, stepCount - limit);
+      const endIndex = stepCount || 999999;
+
+      const result = await callLsApi('GetCascadeTrajectorySteps', {
+        cascadeId: id,
+        startIndex,
+        endIndex
+      });
+
+      return {
+        ...result,
+        totalSteps: stepCount,
+        loadedStart: startIndex,
+        loadedEnd: endIndex
+      };
+    }
+  );
+
+  // GET /api/files — read local file content for frontend preview
+  fastify.get(
+    '/api/files',
+    {
+      schema: {
+        description: 'Read local file content for frontend viewer',
+        tags: ['files'],
+        querystring: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' }
+          },
+          required: ['path']
+        }
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const { path: filePath } = request.query as { path: string };
+      const fs = await import('fs/promises');
+      try {
+        // Basic check to ensure we only read text files or code
+        const content = await fs.readFile(filePath, 'utf-8');
+        return { content, path: filePath };
+      } catch (err: any) {
+        return reply.code(400).send({ error: `Cannot read file: ${err.message}` });
+      }
     }
   );
 }

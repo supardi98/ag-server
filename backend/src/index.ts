@@ -15,7 +15,7 @@ import { statusRoutes } from './routes/status.js';
 import { authRoutes } from './routes/auth.js';
 import { agentRoutes } from './routes/agent.js';
 import { settingsRoutes } from './routes/settings.js';
-import { sessionsRoutes } from './routes/sessions.js';
+import { sessionsRoutes, warmProjectsCache } from './routes/sessions.js';
 import { registerSession } from './plugins/session.js';
 import { dbService } from './services/db.js';
 
@@ -95,6 +95,9 @@ const start = async () => {
     await fastify.listen({ port: config.PORT, host: config.HOST });
     fastify.log.info(`Server on http://${config.HOST}:${config.PORT}`);
     fastify.log.info(`API Docs at http://${config.HOST}:${config.PORT}/docs`);
+    // Warm projects cache in background so first browser request is instant
+    warmProjectsCache();
+    fastify.log.info('Projects cache warming started in background');
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

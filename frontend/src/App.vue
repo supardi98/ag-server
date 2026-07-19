@@ -45,7 +45,11 @@
 
       <!-- Horizontal Navigation Tabs -->
       <nav class="nav-tabs">
-        <RouterLink to="/" class="tab-item" active-class="tab-item--active" exact-active-class="tab-item--active">
+        <RouterLink 
+          to="/" 
+          class="tab-item" 
+          :class="{ 'tab-item--active': $route.path === '/' || $route.path.startsWith('/conversation/') }"
+        >
           <TerminalIcon class="tab-icon-svg" />
           <span class="tab-label">Antigravity</span>
         </RouterLink>
@@ -181,7 +185,8 @@ onUnmounted(() => {
 .layout-container {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: var(--bg-primary);
   color: var(--text-primary);
 }
@@ -377,5 +382,9 @@ onUnmounted(() => {
 .main-content {
   flex: 1;
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 </style>

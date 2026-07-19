@@ -16,6 +16,11 @@ const router = createRouter({
       component: () => import('../views/DashboardView.vue'),
     },
     {
+      path: '/conversation/:id',
+      name: 'conversation',
+      component: () => import('../views/DashboardView.vue'),
+    },
+    {
       path: '/log',
       name: 'log',
       component: () => import('../views/LogView.vue'),
