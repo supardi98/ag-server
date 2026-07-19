@@ -8,7 +8,7 @@ backend/dist/
 frontend/dist/
 
 # SQLite database
-backend/data/
+data/
 
 # Environment variables
 .env
