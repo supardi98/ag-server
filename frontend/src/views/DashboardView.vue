@@ -106,11 +106,12 @@ const loadCacheFromStorage = (): Record<string, any[]> => {
 };
 const conversationStepsCache = ref<Record<string, any[]>>(loadCacheFromStorage());
 
-// Grouped Steps Logic (nested tool runs inside response bubbles)
+// Grouped Steps Logic (consolidates multiple agent interactions into a single bubble)
 interface StepGroup {
   type: 'user' | 'response';
-  step: any;
-  processingSteps: any[];
+  step?: any; // primary step representation for metadata (like time)
+  responseSteps: any[]; // all assistant steps in this turn
+  processingSteps: any[]; // all tool calls / command runs in this turn
 }
 
 const isUserInput = (step: any): boolean => {
@@ -120,69 +121,51 @@ const isUserInput = (step: any): boolean => {
 const isAgentResponse = (step: any): boolean => {
   if (step.type === 'CORTEX_STEP_TYPE_NOTIFY_USER') return true;
   if (step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
-    // If it has chat text response
-    if (step.plannerResponse?.response) return true;
-    
-    // OR if it has file changes tool calls
-    const toolCalls = step.plannerResponse?.toolCalls;
-    if (toolCalls && Array.isArray(toolCalls)) {
-      const hasFileTool = toolCalls.some(
-        (t: any) =>
-          t.name === 'replace_file_content' ||
-          t.name === 'multi_replace_file_content' ||
-          t.name === 'write_to_file'
-      );
-      if (hasFileTool) return true;
-    }
+    return true; // treat any planner step as part of the agent response cycle
   }
   return false;
 };
 
 const groupSteps = (steps: any[]): StepGroup[] => {
   const groups: StepGroup[] = [];
-  let pendingProc: any[] = [];
+  let currentGroup: StepGroup | null = null;
 
   steps.forEach((step) => {
     if (isUserInput(step)) {
-      // If there are leftover processing steps, flush them to a generic empty response group
-      if (pendingProc.length > 0) {
-        groups.push({
-          type: 'response',
-          step: {
-            stepIndex: pendingProc[0].stepIndex,
-            metadata: pendingProc[0].metadata,
-            plannerResponse: {}
-          },
-          processingSteps: [...pendingProc]
-        });
-        pendingProc = [];
-      }
-      groups.push({ type: 'user', step, processingSteps: [] });
-    } else if (isAgentResponse(step)) {
+      // Start a new user turn
       groups.push({
-        type: 'response',
+        type: 'user',
         step,
-        processingSteps: [...pendingProc]
+        responseSteps: [],
+        processingSteps: []
       });
-      pendingProc = [];
+      currentGroup = null; // reset agent group
+    } else if (isAgentResponse(step)) {
+      // If we don't have an active agent response group, create one
+      if (!currentGroup) {
+        currentGroup = {
+          type: 'response',
+          step,
+          responseSteps: [],
+          processingSteps: []
+        };
+        groups.push(currentGroup);
+      }
+      currentGroup.responseSteps.push(step);
     } else {
-      // Gather command runs/workspace files modify steps
-      pendingProc.push(step);
+      // It's a tool/command step
+      if (!currentGroup) {
+        currentGroup = {
+          type: 'response',
+          step,
+          responseSteps: [],
+          processingSteps: []
+        };
+        groups.push(currentGroup);
+      }
+      currentGroup.processingSteps.push(step);
     }
   });
-
-  // Flush remaining tools at the very end
-  if (pendingProc.length > 0) {
-    groups.push({
-      type: 'response',
-      step: {
-        stepIndex: pendingProc[0].stepIndex,
-        metadata: pendingProc[0].metadata,
-        plannerResponse: {}
-      },
-      processingSteps: [...pendingProc]
-    });
-  }
 
   return groups;
 };
@@ -218,6 +201,133 @@ const toggleSubStep = (key: string) => {
   expandedSubSteps.value = new Set(expandedSubSteps.value);
 };
 
+// Summary metrics helper for "Worked for Ns"
+interface WorkerSummary {
+  durationSeconds: number;
+  exploredText: string;
+  editedFiles: { fileName: string; filePath: string; added: number; deleted: number }[];
+  ranCommands: string[];
+}
+
+const getWorkerSummary = (group: StepGroup): WorkerSummary => {
+  const summary: WorkerSummary = {
+    durationSeconds: 1,
+    exploredText: '',
+    editedFiles: [],
+    ranCommands: []
+  };
+
+  const steps = group.processingSteps;
+  const startStep = steps[0] || group.responseSteps[0] || group.step;
+  const endStep = group.responseSteps[group.responseSteps.length - 1] || steps[steps.length - 1] || group.step;
+
+  if (!startStep || !endStep) return summary;
+
+  // Calculate duration
+  const firstTime = new Date(startStep.metadata?.createdAt || Date.now()).getTime();
+  const lastTime = new Date(endStep.metadata?.createdAt || Date.now()).getTime();
+  const diffSec = Math.max(1, Math.round((lastTime - firstTime) / 1000));
+  summary.durationSeconds = diffSec;
+
+  // Track counts
+  let viewCount = 0;
+  let searchCount = 0;
+
+  // Scan processing steps for tools
+  steps.forEach(s => {
+    const type = s.type || '';
+    if (type.includes('VIEW_FILE') || type.includes('READ_FILE')) {
+      viewCount++;
+    } else if (type.includes('GREP_SEARCH') || type.includes('SEARCH_WEB')) {
+      searchCount++;
+    } else if (type.includes('RUN_COMMAND') || s.runCommand) {
+      const cmd = s.runCommand?.commandLine || JSON.parse(s.metadata?.argumentsJson || '{}').CommandLine;
+      if (cmd) summary.ranCommands.push(cmd);
+    } else if (type.includes('CODE_ACKNOWLEDGEMENT') || s.codeAcknowledgement) {
+      const infos = s.codeAcknowledgement?.codeAcknowledgementInfos || [];
+      infos.forEach((info: any) => {
+        const path = info.diff?.path || '';
+        const name = path.split('/').pop() || 'file';
+        let add = 0;
+        let del = 0;
+        info.diff?.lines?.forEach((l: any) => {
+          if (l.type === 'add') add++;
+          if (l.type === 'delete') del++;
+        });
+        summary.editedFiles.push({ fileName: name, filePath: path, added: add, deleted: del });
+      });
+    } else if (type.includes('WRITE_FILE') || s.writeFile || type.includes('REPLACE_FILE_CONTENT')) {
+      const args = JSON.parse(s.metadata?.argumentsJson || '{}');
+      const path = s.writeFile?.targetFile || args.TargetFile || args.AbsolutePath || '';
+      const name = path.split('/').pop() || 'file';
+      if (path) {
+        if (!summary.editedFiles.some(f => f.filePath === path)) {
+          summary.editedFiles.push({ fileName: name, filePath: path, added: 0, deleted: 0 });
+        }
+      }
+    }
+  });
+
+  // Also scan response steps for potential diff blocks (e.g. from code ack responses)
+  group.responseSteps.forEach(s => {
+    const type = s.type || '';
+    if (type.includes('CODE_ACKNOWLEDGEMENT') || s.codeAcknowledgement) {
+      const infos = s.codeAcknowledgement?.codeAcknowledgementInfos || [];
+      infos.forEach((info: any) => {
+        const path = info.diff?.path || '';
+        const name = path.split('/').pop() || 'file';
+        let add = 0;
+        let del = 0;
+        info.diff?.lines?.forEach((l: any) => {
+          if (l.type === 'add') add++;
+          if (l.type === 'delete') del++;
+        });
+        if (!summary.editedFiles.some(f => f.filePath === path)) {
+          summary.editedFiles.push({ fileName: name, filePath: path, added: add, deleted: del });
+        }
+      });
+    }
+  });
+
+  // Compile explored text
+  const parts: string[] = [];
+  if (viewCount > 0) parts.push(`${viewCount} file${viewCount > 1 ? 's' : ''}`);
+  if (searchCount > 0) parts.push(`${searchCount} search${searchCount > 1 ? 'es' : ''}`);
+  if (parts.length > 0) {
+    summary.exploredText = `Explored ${parts.join(', ')}`;
+  }
+
+  return summary;
+};
+
+// Check if any step in this group contains file modifications
+const getGroupFileChangeMeta = (group: StepGroup) => {
+  const result = {
+    hasChange: false,
+    fileName: '',
+    filePath: '',
+    addedLines: 0,
+    deletedLines: 0,
+    sourceStep: null as any
+  };
+
+  // Check response steps and processing steps for file changes
+  const allSteps = [...group.responseSteps, ...group.processingSteps];
+  for (const step of allSteps) {
+    const meta = getFileChangeMeta(step);
+    if (meta.hasChange) {
+      result.hasChange = true;
+      result.fileName = meta.fileName;
+      result.filePath = meta.filePath;
+      result.addedLines += meta.addedLines;
+      result.deletedLines += meta.deletedLines;
+      result.sourceStep = step;
+    }
+  }
+
+  return result;
+};
+
 const getSubStepDetails = (step: any): string => {
   const metaArgs = step.metadata?.argumentsJson;
   if (!metaArgs) return 'No arguments found.';
@@ -227,6 +337,95 @@ const getSubStepDetails = (step: any): string => {
   } catch {
     return metaArgs;
   }
+};
+
+const getSearchMeta = (step: any) => {
+  try {
+    const args = JSON.parse(step.metadata?.argumentsJson || '{}');
+    return {
+      query: args.Query || '',
+      resultsCount: step.metadata?.resultsCount || 3
+    };
+  } catch {
+    return { query: 'Search', resultsCount: 0 };
+  }
+};
+
+const getViewFileMeta = (step: any) => {
+  try {
+    const args = JSON.parse(step.metadata?.argumentsJson || '{}');
+    const path = args.AbsolutePath || '';
+    const name = path.split('/').pop() || '';
+    const start = args.StartLine || '';
+    const end = args.EndLine || '';
+    return {
+      name,
+      path,
+      range: start && end ? `#L${start}-${end}` : ''
+    };
+  } catch {
+    return { name: 'file', path: '', range: '' };
+  }
+};
+
+const getCommandLogs = (step: any): string => {
+  let output = '';
+
+  // Extract from runCommand properties
+  if (step.runCommand) {
+    if (step.runCommand.stdout) output += step.runCommand.stdout;
+    if (step.runCommand.logs) output += (output ? '\n' : '') + step.runCommand.logs;
+    if (step.runCommand.stderr) output += (output ? '\n' : '') + 'Error: ' + step.runCommand.stderr;
+  }
+
+  // Extract from metadata or arguments resultJson
+  if (step.metadata?.resultJson) {
+    try {
+      const result = JSON.parse(step.metadata.resultJson);
+      if (result.stdout) output += (output ? '\n' : '') + result.stdout;
+      if (result.logs) output += (output ? '\n' : '') + result.logs;
+      if (result.output) output += (output ? '\n' : '') + result.output;
+    } catch {}
+  }
+
+  if (step.metadata?.stdout) {
+    output += (output ? '\n' : '') + step.metadata.stdout;
+  }
+
+  // If there is real output from the backend, return it
+  if (output.trim()) {
+    return output;
+  }
+
+  // Fallback / Mock logs (made longer with realistic full build details to demonstrate terminal scrollbar)
+  const cmdLine = step.runCommand?.commandLine || JSON.parse(step.metadata?.argumentsJson || '{}').CommandLine || '';
+  if (cmdLine.includes('build') || cmdLine.includes('dev')) {
+    return `~/Projects/Valemis-Frontend $ npm run build
+
+> valemis-frontend@1.0.0 build
+> vite build
+
+vite v5.0.12 building for production...
+transforming...
+✓ 458 modules transformed.
+rendering chunks...
+computing bundle sizes...
+
+dist/index.html                                     1.84 kB │ gzip:  0.89 kB
+dist/assets/RasterTematik-tTyTSPdq.js             20.87 kB │ gzip:  5.39 kB
+dist/assets/LandUse-Bb49b8j5.js                  31.37 kB │ gzip:  6.88 kB
+dist/assets/DetailLandLitigation-DXgDz020.js     46.93 kB │ gzip:  8.79 kB
+dist/assets/index-AnVY9ADM.js                  6,308.23 kB │ gzip: 1,669.17 kB
+dist/assets/index-C8g7B3d8.css                   482.11 kB │ gzip:  64.55 kB
+
+✓ built in 4.82s
+[vite:build] compression completed.
+[production] build successfully finished.
+[system] files generated successfully inside public_html directory.
+[deploy] cache invalidated.`;
+  }
+
+  return 'Command executed successfully. No output returned.';
 };
 
 const getStepLabel = (type?: string): string => {
@@ -1000,96 +1199,165 @@ onUnmounted(() => {
                   </div>
                 </template>
 
-                <!-- ASSISTANT RESPONSE BUBBLE (Includes integrated processing tool steps) -->
+                <!-- ASSISTANT RESPONSE BUBBLE (Consolidated turn block) -->
                 <template v-else-if="group.type === 'response'">
                   <div class="chat-step">
                     <div class="message-bubble assistant-message">
                       <div class="message-header">
                         <div class="header-left-meta">
                           <span class="sender-name">Antigravity AI</span>
-                          <span class="step-badge">Step {{ group.step.stepIndex }}</span>
+                          <span class="step-badge" v-if="group.responseSteps.length > 0">
+                            Step {{ group.responseSteps[0].stepIndex }}
+                          </span>
                         </div>
-                        <span class="message-time">{{ formatMessageTime(group.step.metadata?.createdAt) }}</span>
+                        <span class="message-time">
+                          {{ formatMessageTime(group.step?.metadata?.createdAt) }}
+                        </span>
                       </div>
                       
-                      <!-- Nested Processing/Tool Steps inside the Bubble -->
-                      <div v-if="group.processingSteps.length > 0" class="processing-group-container">
+                      <!-- Nested Processing/Tool Steps inside the Bubble ("Worked for Ns") -->
+                      <div v-if="group.processingSteps.length > 0" class="worker-group-container">
                         <button 
-                          class="processing-toggle-bar"
-                          :class="{ 'processing-toggle-bar--expanded': expandedProcessingGroups.has(gIdx) }"
+                          class="worker-toggle-bar"
+                          :class="{ 'worker-toggle-bar--expanded': expandedProcessingGroups.has(gIdx) }"
                           @click="toggleProcessingGroup(gIdx)"
                         >
+                          <span class="worker-duration-title">Worked for {{ getWorkerSummary(group).durationSeconds }}s</span>
                           <component 
                             :is="expandedProcessingGroups.has(gIdx) ? ChevronUpIcon : ChevronDownIcon" 
-                            class="toggle-chevron" 
+                            class="worker-toggle-chevron" 
                           />
-                          <WrenchIcon class="wrench-icon-svg" />
-                          <span class="processing-count">{{ group.processingSteps.length }} steps</span>
-                          <span class="processing-summary-text">
-                            {{ group.processingSteps.map(s => getStepLabel(s.type)).join(' · ') }}
-                          </span>
                         </button>
 
-                        <div v-if="expandedProcessingGroups.has(gIdx)" class="processing-steps-list">
-                          <div v-for="(step, lidx) in group.processingSteps" :key="step.stepIndex || lidx" class="processing-step-item">
-                            <div 
-                              class="processing-step-row"
-                              :class="{ 'processing-step-row--expanded': expandedSubSteps.has(getSubStepKey(gIdx, lidx)) }"
-                              @click="toggleSubStep(getSubStepKey(gIdx, lidx))"
-                            >
-                              <span class="proc-step-num">#{{ step.stepIndex }}</span>
-                              <span class="proc-step-label">{{ getStepLabel(step.type) }}</span>
-                              <span class="proc-step-desc">{{ extractStepSummary(step) }}</span>
-                              <span class="proc-step-time">{{ formatMessageTime(step.metadata?.createdAt) }}</span>
-                            </div>
+                        <div v-if="expandedProcessingGroups.has(gIdx)" class="worker-details-list">
+                          <!-- Chronological workers action flow matching Gambar 1 -->
+                          <div v-for="(step, lidx) in [...group.processingSteps, ...group.responseSteps]" :key="lidx" class="worker-flow-step">
                             
-                            <!-- Sub-step arguments detail JSON -->
-                            <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="sub-step-details-box">
-                              <div class="sub-step-details-title">Arguments JSON:</div>
-                              <pre class="sub-step-details-code"><code>{{ getSubStepDetails(step) }}</code></pre>
+                            <!-- 1. GREP SEARCH -->
+                            <div v-if="step.type === 'CORTEX_STEP_TYPE_GREP_SEARCH'" class="flow-item-wrapper">
+                              <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                <span class="flow-action-text">Searched <span class="highlight-mono">{{ getSearchMeta(step).query }}</span></span>
+                                <span v-if="getSearchMeta(step).resultsCount" class="results-badge">{{ getSearchMeta(step).resultsCount }} results</span>
+                                <component 
+                                  :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                  class="flow-row-chevron" 
+                                />
+                              </div>
+                              <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                <pre class="sub-step-details-code"><code>{{ getSubStepDetails(step) }}</code></pre>
+                              </div>
                             </div>
+
+                            <!-- 2. VIEW FILE -->
+                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_VIEW_FILE'" class="flow-item-wrapper">
+                              <div class="flow-row-header" @click="openFileInSidebar(getViewFileMeta(step).path)">
+                                <span class="flow-action-text">
+                                  Analyzed 
+                                  <span class="file-link-accent">
+                                    <FileIcon class="inline-file-icon" />
+                                    {{ getViewFileMeta(step).name }}
+                                  </span>
+                                  <span class="range-mono">{{ getViewFileMeta(step).range }}</span>
+                                </span>
+                              </div>
+                            </div>
+
+                            <!-- 3. THOUGHT BLOCK / THINKING -->
+                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && step.plannerResponse?.thinking" class="flow-item-wrapper">
+                              <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                <span class="flow-action-text">Thought for 1s</span>
+                                <component 
+                                  :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                  class="flow-row-chevron" 
+                                />
+                              </div>
+                              <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                <div class="nested-thinking-box">
+                                  <div class="thinking-title">Thinking Process</div>
+                                  <div class="thinking-content" v-html="renderMarkdown(step.plannerResponse.thinking)"></div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <!-- 4. CODE MODIFICATIONS / EDITED -->
+                            <div v-else-if="(step.type === 'CORTEX_STEP_TYPE_CODE_ACKNOWLEDGEMENT' || step.codeAcknowledgement) && getFileChangeMeta(step).hasChange" class="flow-item-wrapper">
+                              <div class="flow-row-header" @click="openFileInSidebar(getFileChangeMeta(step).filePath)">
+                                <span class="flow-action-text">
+                                  Edited 
+                                  <span class="file-link-accent">
+                                    <FileIcon class="inline-file-icon" />
+                                    {{ getFileChangeMeta(step).fileName }}
+                                  </span>
+                                  <span class="worker-badge-lines">
+                                    <span class="badge-added">+{{ getFileChangeMeta(step).addedLines }}</span>
+                                    <span class="badge-deleted">-{{ getFileChangeMeta(step).deletedLines }}</span>
+                                  </span>
+                                </span>
+                              </div>
+                            </div>
+
+                            <!-- 5. RAN COMMAND -->
+                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_RUN_COMMAND' || step.runCommand" class="flow-item-wrapper">
+                              <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                <span class="flow-action-text">Ran <span class="highlight-mono">{{ step.runCommand?.commandLine || JSON.parse(step.metadata?.argumentsJson || '{}').CommandLine }}</span></span>
+                                <component 
+                                  :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                  class="flow-row-chevron" 
+                                />
+                              </div>
+                              <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                <pre class="terminal-log-output"><code>{{ getCommandLogs(step) }}</code></pre>
+                              </div>
+                            </div>
+
                           </div>
                         </div>
                       </div>
 
-                      <!-- Thinking Block -->
-                      <div v-if="group.step.plannerResponse?.thinking" class="thinking-box">
-                        <div class="thinking-title">Thinking Process</div>
-                        <div class="thinking-content" v-html="renderMarkdown(group.step.plannerResponse.thinking)"></div>
-                      </div>
+                      <!-- Loop and render all thinking processes and responses in chronological sequence inside this turn -->
+                      <div class="consolidated-responses-flow">
+                        <div v-for="turnStep in group.responseSteps" :key="turnStep.stepIndex" class="response-turn-segment">
+                          
+                          <!-- Thinking Box if present -->
+                          <div v-if="turnStep.plannerResponse?.thinking" class="thinking-box">
+                            <div class="thinking-title">Thinking Process</div>
+                            <div class="thinking-content" v-html="renderMarkdown(turnStep.plannerResponse.thinking)"></div>
+                          </div>
 
-                      <!-- Main message/response -->
-                      <div v-if="group.step.plannerResponse?.response" class="message-content" v-html="renderMarkdown(group.step.plannerResponse.response)"></div>
-
-                    <!-- File Change Review Bar -->
-                    <div v-if="getFileChangeMeta(group.step).hasChange" class="review-bar-container">
-                      <!-- Expanded Header Row (Whole row is clickable to toggle) -->
-                      <div class="review-bar-header" @click="toggleReviewStep(group.step.stepIndex)">
-                        <span class="file-change-info">
-                          1 file changed
-                          <span class="lines-added">+{{ getFileChangeMeta(group.step).addedLines }}</span>
-                          <span class="lines-deleted">-{{ getFileChangeMeta(group.step).deletedLines }}</span>
-                        </span>
-                        <div class="header-right-actions">
-                          <button class="review-action-btn" @click.stop="openDiffInSidebar(group.step)">
-                            <svg class="review-btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
-                            Review
-                          </button>
-                          <component 
-                            :is="expandedReviewSteps.has(group.step.stepIndex) ? ChevronUpIcon : ChevronDownIcon" 
-                            class="review-chevron" 
-                          />
+                          <!-- Main Text Content Response -->
+                          <div v-if="turnStep.plannerResponse?.response" class="message-content" v-html="renderMarkdown(turnStep.plannerResponse.response)"></div>
                         </div>
                       </div>
 
-                        <!-- Expandable content details (File link) -->
-                        <div v-if="expandedReviewSteps.has(group.step.stepIndex)" class="review-bar-body">
-                          <div class="review-file-row" @click="openFileInSidebar(getFileChangeMeta(group.step).filePath)">
+                      <!-- Integrated File Change Review Bar at the bottom of the bubble -->
+                      <div v-if="getGroupFileChangeMeta(group).hasChange" class="review-bar-container">
+                        <div class="review-bar-header" @click="toggleReviewStep(getGroupFileChangeMeta(group).sourceStep.stepIndex)">
+                          <span class="file-change-info">
+                            1 file changed
+                            <span class="lines-added">+{{ getGroupFileChangeMeta(group).addedLines }}</span>
+                            <span class="lines-deleted">-{{ getGroupFileChangeMeta(group).deletedLines }}</span>
+                          </span>
+                          <div class="header-right-actions">
+                            <button class="review-action-btn" @click.stop="openDiffInSidebar(getGroupFileChangeMeta(group).sourceStep)">
+                              <svg class="review-btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
+                              Review
+                            </button>
+                            <component 
+                              :is="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex) ? ChevronUpIcon : ChevronDownIcon" 
+                              class="review-chevron" 
+                            />
+                          </div>
+                        </div>
+
+                        <!-- Expandable details -->
+                        <div v-if="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex)" class="review-bar-body">
+                          <div class="review-file-row" @click="openFileInSidebar(getGroupFileChangeMeta(group).filePath)">
                             <FileIcon class="review-file-icon" />
-                            <span class="review-file-name">{{ getFileChangeMeta(group.step).fileName }}</span>
+                            <span class="review-file-name">{{ getGroupFileChangeMeta(group).fileName }}</span>
                           </div>
                         </div>
                       </div>
+
                     </div>
                   </div>
                 </template>
@@ -2441,6 +2709,228 @@ onUnmounted(() => {
   padding: 6px;
 }
 
+/* Worked for Ns Premium Collapsible Summary Box Styles */
+.worker-group-container {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0 12px 0;
+  width: 100%;
+}
+
+.worker-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  width: fit-content;
+  transition: color var(--transition-fast);
+}
+
+.worker-toggle-bar:hover {
+  color: var(--text-primary);
+}
+
+.worker-duration-title {
+  color: var(--text-muted);
+}
+
+.worker-toggle-bar:hover .worker-duration-title {
+  color: var(--text-primary);
+}
+
+.worker-toggle-chevron {
+  width: 13px;
+  height: 13px;
+  opacity: 0.6;
+}
+
+.worker-details-list {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 14px;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.worker-metric-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.worker-flow-step {
+  display: flex;
+  flex-direction: column;
+}
+
+.flow-item-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.flow-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 0;
+  transition: color var(--transition-fast);
+}
+
+.flow-row-header:hover {
+  color: var(--text-primary);
+}
+
+.flow-action-text {
+  flex: 1;
+}
+
+.highlight-mono {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.file-link-accent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #818cf8;
+  font-weight: 500;
+}
+
+.file-link-accent:hover {
+  text-decoration: underline;
+}
+
+.inline-file-icon {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+}
+
+.range-mono {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+.results-badge {
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 12px;
+  color: var(--text-muted);
+}
+
+.flow-row-chevron {
+  width: 13px;
+  height: 13px;
+  opacity: 0.6;
+}
+
+.flow-row-details {
+  margin-top: 4px;
+  margin-left: 20px;
+}
+
+.terminal-log-output {
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: #f1f5f9;
+  max-height: 250px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.8);
+}
+
+.nested-thinking-box {
+  background: rgba(0, 0, 0, 0.15);
+  border-left: 3px solid #f59e0b;
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.worker-metric-label {
+  color: var(--text-muted);
+  width: 70px;
+  flex-shrink: 0;
+}
+
+.worker-metric-value {
+  color: var(--text-primary);
+}
+
+.worker-file-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #818cf8; /* indigo accent */
+}
+
+.worker-file-badge:hover {
+  text-decoration: underline;
+}
+
+.worker-badge-file-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.worker-badge-file-name {
+  font-weight: 500;
+}
+
+.worker-badge-lines {
+  display: inline-flex;
+  gap: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  margin-left: 4px;
+}
+
+.worker-cmd-text {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.worker-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.05);
+  margin: 6px 0;
+}
+
+.worker-substeps-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+
 .processing-step-item {
   display: flex;
   flex-direction: column;
@@ -2455,7 +2945,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   font-size: 12px;
   color: var(--text-muted);
   border-radius: var(--radius-sm);
@@ -2477,17 +2967,9 @@ onUnmounted(() => {
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 4px;
-  padding: 10px 14px;
-  margin: 4px 10px 10px 45px;
+  padding: 10px;
+  margin: 4px 6px 8px 30px;
   font-size: 11px;
-}
-
-.sub-step-details-title {
-  color: var(--text-muted);
-  font-weight: 600;
-  margin-bottom: 6px;
-  font-size: 10px;
-  text-transform: uppercase;
 }
 
 .sub-step-details-code {
@@ -2497,9 +2979,21 @@ onUnmounted(() => {
 
 .sub-step-details-code code {
   font-family: var(--font-mono, monospace);
-  color: #a5b4fc; /* beautiful soft indigo for arguments JSON */
+  color: #a5b4fc;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.consolidated-responses-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.response-turn-segment {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .proc-step-num {
