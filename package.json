@@ -2,10 +2,18 @@
   "name": "ag-remote-workspace",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Monorepo Workspace for Antigravity Remote",
   "scripts": {
+    "install": "node install.js",
     "dev": "npm run dev --prefix backend",
     "build": "npm run build --prefix frontend && npm run build --prefix backend",
     "start": "npm run start --prefix backend"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true,
+    "esbuild@0.28.1": true,
+    "esbuild@0.21.5": true,
+    "sqlite3@6.0.1": true
   }
 }
