@@ -326,6 +326,36 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // POST /api/conversations — Start a new conversation (cascade)
+  fastify.post(
+    '/api/conversations',
+    {
+      schema: {
+        description: 'Start a new conversation cascade',
+        tags: ['conversations'],
+        body: {
+          type: 'object',
+          properties: {
+            folderUri: { type: 'string' }
+          }
+        }
+      },
+      preHandler: requireAuth,
+    },
+    async (request) => {
+      const { folderUri } = request.body as { folderUri?: string };
+      const body: any = {
+        source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT',
+        trajectoryType: 'CORTEX_TRAJECTORY_TYPE_CASCADE'
+      };
+      if (folderUri) {
+        body.workspaceUris = [folderUri];
+      }
+      const result = await callLsApi('StartCascade', body);
+      return { ok: true, cascadeId: result.cascadeId };
+    }
+  );
+
   // GET /api/conversations/:id/steps
   fastify.get(
     '/api/conversations/:id/steps',
@@ -419,6 +449,57 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
         return { content, path: filePath };
       } catch (err: any) {
         return reply.code(400).send({ error: `Cannot read file: ${err.message}` });
+      }
+    }
+  );
+
+  // POST /api/conversations/:id/chat — Send a chat message / run cascade
+  fastify.post(
+    '/api/conversations/:id/chat',
+    {
+      schema: {
+        description: 'Send a prompt / message to run a cascade in this conversation',
+        tags: ['conversations'],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }
+          }
+        },
+        body: {
+          type: 'object',
+          required: ['prompt'],
+          properties: {
+            prompt: { type: 'string' },
+            modelId: { type: 'string' }
+          }
+        }
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { prompt, modelId = 'MODEL_PLACEHOLDER_M26' } = request.body as { prompt: string; modelId?: string };
+
+      try {
+        const result = await callLsApi('SendUserCascadeMessage', {
+          metadata: {},
+          cascadeId: id,
+          items: [{ text: prompt }],
+          cascadeConfig: {
+            plannerConfig: {
+              plannerTypeConfig: {
+                case: 'conversational',
+                value: {}
+              },
+              planModel: modelId,
+              requestedModel: { modelId }
+            }
+          }
+        });
+        return { ok: true, result };
+      } catch (err: any) {
+        return reply.code(500).send({ error: `Failed to send message: ${err.message}` });
       }
     }
   );

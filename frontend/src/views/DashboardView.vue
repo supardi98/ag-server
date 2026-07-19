@@ -1025,7 +1025,185 @@ watch(activeConversationId, async (newId) => {
   }
 });
 
+// Chat input states
+const chatInputText = ref('');
+const chatSending = ref(false);
+const chatInputRef = ref<HTMLTextAreaElement | null>(null);
+
+// Onboarding states
+const newChatPrompt = ref('');
+const initSending = ref(false);
+const onboardingInputRef = ref<HTMLTextAreaElement | null>(null);
+
+// Interactive Dropdown States
+const selectedProjectUri = ref('');
+const activeModelName = ref('Gemini 3.5 Flash (Low)');
+const activeModelId = ref('MODEL_PLACEHOLDER_M26');
+const activeContextScope = ref('Local');
+
+const showWorkspaceDropdown = ref(false);
+const showModelDropdown = ref(false);
+const showContextDropdown = ref(false);
+
+const activeSelectedProject = computed(() => {
+  if (!selectedProjectUri.value && sortedProjects.value.length > 0) {
+    return sortedProjects.value[0];
+  }
+  return sortedProjects.value.find(p => p.folderUri === selectedProjectUri.value) || sortedProjects.value[0];
+});
+
+const availableModels = [
+  { name: 'Gemini 3.5 Flash (Medium)', id: 'gemini-3.5-flash-medium', tag: 'Fast' },
+  { name: 'Gemini 3.5 Flash (High)', id: 'gemini-3.5-flash-high', tag: 'Fast' },
+  { name: 'Gemini 3.5 Flash (Low)', id: 'MODEL_PLACEHOLDER_M26', tag: 'Fast' },
+  { name: 'Gemini 3.1 Pro (Low)', id: 'gemini-3.1-pro-low' },
+  { name: 'Gemini 3.1 Pro (High)', id: 'gemini-3.1-pro-high' },
+  { name: 'Claude Sonnet 4.6 (Thinking)', id: 'claude-sonnet-4.6', warning: true },
+  { name: 'Claude Opus 4.6 (Thinking)', id: 'claude-opus-4.6', warning: true },
+  { name: 'GPT-OSS 120B (Medium)', id: 'gpt-oss-120b', warning: true }
+];
+
+const availableScopes = ['Local', 'Web', 'Workspace'];
+
+const selectProject = (uri: string) => {
+  selectedProjectUri.value = uri;
+  showWorkspaceDropdown.value = false;
+};
+
+const selectModel = (name: string, id: string) => {
+  activeModelName.value = name;
+  activeModelId.value = id;
+  showModelDropdown.value = false;
+};
+
+const selectContext = (scope: string) => {
+  activeContextScope.value = scope;
+  showContextDropdown.value = false;
+};
+
+// Global click handler to close dropdowns when clicking outside
+const closeAllDropdowns = (e: MouseEvent) => {
+  const target = e.target as HTMLElement;
+  if (!target.closest('.onboarding-workspace-header')) showWorkspaceDropdown.value = false;
+  if (!target.closest('.model-select-trigger')) showModelDropdown.value = false;
+  if (!target.closest('.scope-trigger')) showContextDropdown.value = false;
+};
+
+onMounted(() => {
+  document.addEventListener('click', closeAllDropdowns);
+});
+
+const loadActiveConversationSteps = async (id: string) => {
+  try {
+    const res = await fetch(`/api/conversations/${id}/steps`);
+    if (res.ok) {
+      const data = await res.json();
+      const steps = data.steps || [];
+      activeConvSteps.value = steps;
+      loadedStart.value = data.loadedStart || 0;
+      totalSteps.value = data.totalSteps || steps.length;
+      scrollToBottom();
+    }
+  } catch (err) {
+    console.error('Failed to reload steps', err);
+  }
+};
+
+const handleSendChat = async () => {
+  if (!activeConversationId.value || !chatInputText.value.trim() || chatSending.value) return;
+
+  const prompt = chatInputText.value.trim();
+  chatInputText.value = '';
+  chatSending.value = true;
+
+  try {
+    const res = await fetch(`/api/conversations/${activeConversationId.value}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ prompt, modelId: activeModelId.value })
+    });
+
+    if (res.ok) {
+      await loadActiveConversationSteps(activeConversationId.value);
+      let pollCount = 0;
+      const interval = setInterval(async () => {
+        pollCount++;
+        await loadActiveConversationSteps(activeConversationId.value);
+        if (pollCount >= 5) {
+          clearInterval(interval);
+        }
+      }, 1500);
+    } else {
+      console.error('Failed to send prompt to backend');
+    }
+  } catch (err) {
+    console.error('Chat execution error', err);
+  } finally {
+    chatSending.value = false;
+    nextTick(() => {
+      chatInputRef.value?.focus();
+    });
+  }
+};
+
+const handleInitNewConversation = async () => {
+  if (!newChatPrompt.value.trim() || initSending.value) return;
+
+  const prompt = newChatPrompt.value.trim();
+  newChatPrompt.value = '';
+  initSending.value = true;
+
+  // Find selected workspace folder
+  const activeProj = activeSelectedProject.value;
+  const folderUri = activeProj ? activeProj.folderUri : '';
+
+  try {
+    // 1. Initialize new cascade
+    const initRes = await fetch('/api/conversations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ folderUri })
+    });
+
+    if (!initRes.ok) throw new Error('Failed to start cascade');
+    const { cascadeId } = await initRes.json();
+
+    if (cascadeId) {
+      // 2. Send prompt as the first message
+      await fetch(`/api/conversations/${cascadeId}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ prompt, modelId: activeModelId.value })
+      });
+
+      // 3. Sync project conversations lists
+      await fetchProjects();
+
+      // 4. Redirect route to the new conversation
+      activeConversationId.value = cascadeId;
+      router.push(`/conversation/${cascadeId}`);
+    }
+  } catch (err) {
+    console.error('Failed to initialize new conversation', err);
+  } finally {
+    initSending.value = false;
+  }
+};
+
+const selectProjectFromSidebar = (project: any) => {
+  activeConversationId.value = null;
+  selectedProjectUri.value = project.folderUri;
+  router.push('/');
+};
+
 onUnmounted(() => {
+  document.removeEventListener('click', closeAllDropdowns);
   document.removeEventListener('click', onSortClickOutside);
 });
 </script>
@@ -1039,9 +1217,9 @@ onUnmounted(() => {
           variant="primary"
           class="w-full new-conv-btn"
           :disabled="!status?.cdpConnected"
-          @click="showConnectModal = true"
+          @click="activeConversationId = null; router.push('/')"
         >
-          <FolderPlusIcon class="btn-icon-svg" /> New Conversation
+          <PlusIcon class="btn-icon-svg" /> New Conversation
         </AgButton>
       </div>
 
@@ -1082,6 +1260,15 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
+
+          <!-- New Folder Plus icon button to open Connect Workspace modal -->
+          <button
+            class="refresh-projects-btn"
+            @click="showConnectModal = true"
+            title="Connect local workspace folder"
+          >
+            <FolderPlusIcon class="refresh-projects-icon" />
+          </button>
         </div>
       </div>
       <div v-if="projectsRefreshing" class="sidebar-refreshing">Refreshing...</div>
@@ -1114,7 +1301,7 @@ onUnmounted(() => {
             <button
               class="add-conv-btn"
               :title="`New conversation in ${project.name}`"
-              @click.stop="newWorkspacePath = project.folderUri.replace('file://', ''); showConnectModal = true"
+              @click.stop="selectProjectFromSidebar(project)"
             >
               <PlusIcon class="add-conv-icon" />
             </button>
@@ -1369,6 +1556,76 @@ onUnmounted(() => {
                 <p>No steps found in this conversation yet.</p>
               </div>
             </div>
+
+            <!-- Premium Cursor/Gemini-style Chat Input Bar -->
+            <div class="chat-input-wrapper">
+              <div 
+                class="chat-input-box" 
+                :class="{ 
+                  'chat-input-box--focused': chatSending,
+                  'chat-input-box--running': activeConversationId && isConversationRunning(activeConversationId)
+                }"
+              >
+                <textarea
+                  ref="chatInputRef"
+                  v-model="chatInputText"
+                  placeholder="Ask anything, @ to mention, / for actions"
+                  :disabled="chatSending"
+                  rows="1"
+                  @keydown.enter.prevent="handleSendChat"
+                />
+                
+                <div class="chat-input-actions-row">
+                  <div class="left-actions">
+                    <button class="action-circle-btn" title="Add files or context">
+                      <PlusIcon class="input-btn-icon" />
+                    </button>
+                    
+                    <div class="model-select-wrapper">
+                      <div class="model-select-trigger" @click.stop="showModelDropdown = !showModelDropdown" title="Change LLM model">
+                        <span>{{ activeModelName }}</span>
+                        <ChevronDownIcon class="model-select-chevron" />
+                      </div>
+                      
+                      <!-- Model list dropdown -->
+                      <div v-if="showModelDropdown" class="onboarding-dropdown model-dropdown-pos font-sans-dropdown">
+                        <div class="dropdown-header-title">Model</div>
+                        <button 
+                          v-for="m in availableModels" 
+                          :key="m.id" 
+                          class="onboarding-dropdown-item model-item-row"
+                          :class="{ 'dropdown-item--active': activeModelId === m.id }"
+                          @click="selectModel(m.name, m.id)"
+                        >
+                          <span class="model-item-name">{{ m.name }}</span>
+                          
+                          <!-- Pill badge with info icon -->
+                          <span v-if="m.tag" class="model-tag-pill">
+                            {{ m.tag }}
+                            <svg class="model-info-icon" xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                          </span>
+
+                          <!-- Warning/limit triangle icon -->
+                          <svg v-if="m.warning" class="model-warning-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12" y1="17" y2="17"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button 
+                    class="send-mic-btn"
+                    :class="{ 'send-mic-btn--active': chatInputText.trim().length > 0 }"
+                    :disabled="chatSending"
+                    @click="handleSendChat"
+                  >
+                    <!-- Mic Icon if input is empty -->
+                    <svg v-if="chatInputText.trim().length === 0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                    <!-- Send/Arrow Icon if input has text -->
+                    <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- Right Sidebar File / Diff Viewer (Slide-out panel) -->
@@ -1423,11 +1680,128 @@ onUnmounted(() => {
           </aside>
         </div>
 
-        <!-- Empty Workspace (Default state, only shows if not loading and no activeConversationId) -->
-        <div v-else class="left-col">
-          <div class="empty-workspace">
-            <FolderIcon class="empty-icon" />
-            <p>Select a conversation from the sidebar</p>
+        <!-- Empty Workspace / Onboarding view (Shows when no activeConversationId) -->
+        <div v-else class="left-col onboarding-workspace-container">
+          <div class="onboarding-chat-initial-layout">
+            
+            <!-- Folder workspace selector dropdown -->
+            <div class="onboarding-workspace-header-wrapper">
+              <div class="onboarding-workspace-header" @click.stop="showWorkspaceDropdown = !showWorkspaceDropdown">
+                <FolderOpenIcon class="onboarding-folder-icon" />
+                <span class="onboarding-folder-name">{{ activeSelectedProject?.name || 'ag-server' }}</span>
+                <ChevronDownIcon class="onboarding-folder-chevron" />
+              </div>
+
+              <!-- Workspace dropdown list -->
+              <div v-if="showWorkspaceDropdown && sortedProjects.length > 0" class="onboarding-dropdown workspace-dropdown-pos">
+                <button 
+                  v-for="p in sortedProjects" 
+                  :key="p.folderUri" 
+                  class="onboarding-dropdown-item"
+                  :class="{ 'dropdown-item--active': activeSelectedProject?.folderUri === p.folderUri }"
+                  @click="selectProject(p.folderUri)"
+                >
+                  {{ p.name }}
+                </button>
+                <div class="dropdown-divider"></div>
+                <button 
+                  class="onboarding-dropdown-item new-project-item"
+                  @click="showWorkspaceDropdown = false; showConnectModal = true"
+                >
+                  <PlusIcon class="new-project-plus-icon" />
+                  New Project
+                </button>
+              </div>
+            </div>
+
+            <!-- Premium Input box for onboarding -->
+            <div 
+              class="onboarding-input-box"
+              :class="{ 'chat-input-box--running': initSending }"
+            >
+              <textarea
+                ref="onboardingInputRef"
+                v-model="newChatPrompt"
+                placeholder="Ask anything, @ to mention, / for actions"
+                :disabled="initSending"
+                rows="1"
+                @keydown.enter.prevent="handleInitNewConversation"
+              />
+              
+              <div class="onboarding-actions-row">
+                <div class="onboarding-left-actions">
+                  <button class="action-circle-btn" title="Add files or context">
+                    <PlusIcon class="input-btn-icon" />
+                  </button>
+                  
+                  <div class="model-select-wrapper">
+                    <div class="model-select-trigger" @click.stop="showModelDropdown = !showModelDropdown" title="Change LLM model">
+                      <span>{{ activeModelName }}</span>
+                      <ChevronDownIcon class="model-select-chevron" />
+                    </div>
+
+                    <!-- Model list dropdown -->
+                    <div v-if="showModelDropdown" class="onboarding-dropdown model-dropdown-pos font-sans-dropdown">
+                      <div class="dropdown-header-title">Model</div>
+                      <button 
+                        v-for="m in availableModels" 
+                        :key="m.id" 
+                        class="onboarding-dropdown-item model-item-row"
+                        :class="{ 'dropdown-item--active': activeModelId === m.id }"
+                        @click="selectModel(m.name, m.id)"
+                      >
+                        <span class="model-item-name">{{ m.name }}</span>
+                        
+                        <!-- Pill badge with info icon -->
+                        <span v-if="m.tag" class="model-tag-pill">
+                          {{ m.tag }}
+                          <svg class="model-info-icon" xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                        </span>
+
+                        <!-- Warning/limit triangle icon -->
+                        <svg v-if="m.warning" class="model-warning-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12" y1="17" y2="17"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <button 
+                  class="send-mic-btn"
+                  :class="{ 'send-mic-btn--active': newChatPrompt.trim().length > 0 }"
+                  :disabled="initSending"
+                  @click="handleInitNewConversation"
+                >
+                  <svg v-if="newChatPrompt.trim().length === 0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                  <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+              </div>
+
+              <!-- Context scope dropdown on onboarding bottom border inside frame -->
+              <div class="onboarding-context-scope-row">
+                <div class="scope-trigger-wrapper">
+                  <div class="scope-trigger" @click.stop="showContextDropdown = !showContextDropdown" title="Select codebase context scope">
+                    <!-- Laptop Monitor Icon -->
+                    <svg class="scope-monitor-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+                    <span>{{ activeContextScope }}</span>
+                    <ChevronDownIcon class="scope-select-chevron" />
+                  </div>
+
+                  <!-- Context Scope dropdown list -->
+                  <div v-if="showContextDropdown" class="onboarding-dropdown scope-dropdown-pos">
+                    <button 
+                      v-for="s in availableScopes" 
+                      :key="s" 
+                      class="onboarding-dropdown-item"
+                      :class="{ 'dropdown-item--active': activeContextScope === s }"
+                      @click="selectContext(s)"
+                    >
+                      {{ s }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
@@ -1488,7 +1862,7 @@ onUnmounted(() => {
 }
 
 .sidebar-top-actions {
-  margin-bottom: 20px;
+  margin-bottom: 14px;
 }
 
 .new-conv-btn {
@@ -1496,7 +1870,15 @@ onUnmounted(() => {
   justify-content: center;
   align-items: center;
   font-weight: 600;
-  height: 42px;
+  height: 32px;
+  font-size: 12px;
+  padding: 0 12px;
+}
+
+.new-conv-btn :deep(.btn-icon-svg) {
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
 }
 
 .w-full {
@@ -1933,6 +2315,280 @@ onUnmounted(() => {
   gap: 24px;
   align-items: center;
   justify-content: center;
+  flex: 1;
+}
+
+/* Premium Workspace Onboarding view styles */
+.onboarding-workspace-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.onboarding-chat-initial-layout {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 680px;
+  gap: 20px;
+}
+
+.onboarding-workspace-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all var(--transition-fast);
+}
+
+.onboarding-workspace-header-wrapper {
+  position: relative;
+  width: fit-content;
+}
+
+.model-select-wrapper {
+  position: relative;
+}
+
+.scope-trigger-wrapper {
+  position: relative;
+}
+
+/* Custom premium dropdown list styles */
+.onboarding-dropdown {
+  position: absolute;
+  z-index: 100;
+  background: #181c25; /* darker slate matching dropdown bg */
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  min-width: 250px;
+  padding: 6px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.font-sans-dropdown {
+  font-family: var(--font-sans);
+}
+
+.dropdown-header-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 12px 4px 12px;
+  text-transform: capitalize;
+  opacity: 0.8;
+}
+
+.model-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+.model-item-name {
+  flex: 1;
+  font-size: 13px;
+}
+
+.model-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 20px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.model-info-icon {
+  width: 10px;
+  height: 10px;
+  opacity: 0.6;
+}
+
+.model-warning-icon {
+  width: 12px;
+  height: 12px;
+  margin-right: 2px;
+  color: #f59e0b;
+  fill: rgba(245, 158, 11, 0.1);
+}
+
+.workspace-dropdown-pos {
+  top: calc(100% + 4px);
+  left: 0;
+}
+
+.model-dropdown-pos {
+  bottom: calc(100% + 6px);
+  left: 0;
+}
+
+.scope-dropdown-pos {
+  top: calc(100% + 4px);
+  left: 0;
+}
+
+.onboarding-dropdown-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.onboarding-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.dropdown-item--active {
+  color: var(--text-primary);
+  font-weight: 600;
+  background: rgba(99, 102, 241, 0.15) !important;
+}
+
+.dropdown-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 4px 0;
+}
+
+.new-project-item {
+  color: var(--color-primary) !important;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.new-project-plus-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.onboarding-folder-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
+.onboarding-folder-name {
+  font-family: inherit;
+}
+
+.onboarding-folder-chevron {
+  width: 11px;
+  height: 11px;
+  opacity: 0.6;
+}
+
+.onboarding-input-box {
+  display: flex;
+  flex-direction: column;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 16px 18px 10px 18px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  position: relative;
+  transition: all var(--transition-fast);
+}
+
+.onboarding-input-box:focus-within {
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.15);
+  background: rgba(15, 23, 42, 0.8);
+}
+
+.onboarding-input-box textarea {
+  background: transparent;
+  border: none;
+  resize: none;
+  outline: none;
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--text-primary);
+  width: 100%;
+  min-height: 28px;
+  line-height: 1.5;
+  padding: 0;
+  margin-bottom: 12px;
+}
+
+.onboarding-input-box textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.onboarding-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+}
+
+.onboarding-left-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.onboarding-context-scope-row {
+  display: flex;
+  align-items: center;
+}
+
+.scope-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: all var(--transition-fast);
+}
+
+.scope-trigger:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.scope-monitor-icon {
+  width: 11px;
+  height: 11px;
+  opacity: 0.8;
+}
+
+.scope-select-chevron {
+  width: 9px;
+  height: 9px;
+  opacity: 0.6;
 }
 
 .empty-workspace {
@@ -2175,6 +2831,165 @@ onUnmounted(() => {
 .chat-messages::-webkit-scrollbar-thumb:hover,
 .project-tree::-webkit-scrollbar-thumb:hover {
   background: rgba(99, 102, 241, 0.4); /* soft primary glow on hover */
+}
+
+/* Premium Cursor/Gemini Chat Input Bar Styles */
+.chat-input-wrapper {
+  padding: 16px 20px 20px 20px;
+  background: linear-gradient(180deg, rgba(11, 15, 25, 0) 0%, #0b0f19 60%);
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.chat-input-box {
+  display: flex;
+  flex-direction: column;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 12px 14px;
+  transition: all var(--transition-fast);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(10px);
+}
+
+.chat-input-box:focus-within {
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 4px 24px rgba(99, 102, 241, 0.15);
+  background: rgba(15, 23, 42, 0.8);
+}
+
+@keyframes pulsing-input-border {
+  0% {
+    border-color: rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.15), 0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+  50% {
+    border-color: rgba(16, 185, 129, 0.7);
+    box-shadow: 0 0 18px rgba(16, 185, 129, 0.35), 0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+  100% {
+    border-color: rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.15), 0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+}
+
+.chat-input-box--running {
+  animation: pulsing-input-border 2s infinite ease-in-out !important;
+  background: rgba(16, 185, 129, 0.02) !important;
+}
+
+.chat-input-box textarea {
+  background: transparent;
+  border: none;
+  resize: none;
+  outline: none;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  width: 100%;
+  min-height: 24px;
+  max-height: 120px;
+  line-height: 1.5;
+  padding: 0;
+  margin-bottom: 10px;
+}
+
+.chat-input-box textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.chat-input-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.left-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-circle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.action-circle-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.input-btn-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.model-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 20px;
+  padding: 4px 10px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.model-select-trigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.model-select-chevron {
+  width: 10px;
+  height: 10px;
+  opacity: 0.7;
+}
+
+.send-mic-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.send-mic-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+
+.send-mic-btn--active {
+  background: var(--color-primary) !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.5);
+}
+
+.send-mic-btn--active:hover {
+  filter: brightness(1.15);
 }
 
 .chat-step {
