@@ -1,65 +1,75 @@
 import fastifyCookie from '@fastify/cookie';
 import fastifySession from '@fastify/session';
 import { FastifyInstance } from 'fastify';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
+import { db } from '../services/db.js';
 import { config } from '../config/env.js';
 
-// Simple custom file-based store to avoid native library dependencies/issues
-class FileSessionStore {
-  private dir: string;
-
-  constructor(dir: string) {
-    this.dir = dir;
-    if (!fs.existsSync(this.dir)) {
-      fs.mkdirSync(this.dir, { recursive: true });
-    }
-  }
-
-  private getPath(sid: string): string {
-    return path.join(this.dir, `${encodeURIComponent(sid)}.json`);
+// Custom session store that uses the existing better-sqlite3 DB connection
+class SqliteSessionStore {
+  constructor() {
+    // Create sessions table in our shared SQLite DB
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        sid TEXT PRIMARY KEY,
+        sess TEXT NOT NULL,
+        expired INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_expired ON sessions (expired);
+    `);
   }
 
   get(sid: string, callback: (err: any, session?: any) => void): void {
-    const filePath = this.getPath(sid);
-    if (!fs.existsSync(filePath)) {
-      return callback(null, null);
-    }
-    fs.readFile(filePath, 'utf8', (err, data) => {
-      if (err) return callback(err);
-      try {
-        const session = JSON.parse(data);
-        callback(null, session);
-      } catch (e) {
-        callback(e);
+    try {
+      const row = db.prepare('SELECT sess, expired FROM sessions WHERE sid = ?').get(sid) as
+        | { sess: string; expired: number }
+        | undefined;
+
+      if (!row) {
+        return callback(null, null);
       }
-    });
+
+      // Check if session has expired
+      if (Date.now() > row.expired) {
+        this.destroy(sid, () => callback(null, null));
+        return;
+      }
+
+      const session = JSON.parse(row.sess);
+      callback(null, session);
+    } catch (err) {
+      callback(err);
+    }
   }
 
   set(sid: string, session: any, callback: (err?: any) => void): void {
-    const filePath = this.getPath(sid);
-    fs.writeFile(filePath, JSON.stringify(session), 'utf8', (err) => {
+    try {
+      const sessStr = JSON.stringify(session);
+      const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days fallback
+      const expired = Date.now() + (session.cookie?.maxAge ?? maxAge);
+
+      db.prepare(`
+        INSERT OR REPLACE INTO sessions (sid, sess, expired)
+        VALUES (?, ?, ?)
+      `).run(sid, sessStr, expired);
+
+      callback(null);
+    } catch (err) {
       callback(err);
-    });
+    }
   }
 
   destroy(sid: string, callback: (err?: any) => void): void {
-    const filePath = this.getPath(sid);
-    if (!fs.existsSync(filePath)) {
-      return callback(null);
-    }
-    fs.unlink(filePath, (err) => {
+    try {
+      db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
+      callback(null);
+    } catch (err) {
       callback(err);
-    });
+    }
   }
 }
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const sessionDir = path.resolve(__dirname, '../../../data/sessions');
-
 export async function registerSession(fastify: FastifyInstance) {
-  const store = new FileSessionStore(sessionDir);
+  const store = new SqliteSessionStore();
 
   await fastify.register(fastifyCookie);
   await fastify.register(fastifySession, {
