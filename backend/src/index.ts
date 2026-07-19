@@ -12,6 +12,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config/env.js';
 import { statusRoutes } from './routes/status.js';
+import { authRoutes } from './routes/auth.js';
+import { registerSession } from './plugins/session.js';
 import { dbService } from './services/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +24,9 @@ const fastify = Fastify({ logger: true });
 // Initialize DB
 dbService.set('startup_time', new Date().toISOString());
 fastify.log.info(`SQLite initialized. Last startup: ${dbService.get('startup_time')}`);
+
+// Register session (must be before routes)
+await registerSession(fastify);
 
 // Register Swagger
 await fastify.register(swagger, {
@@ -40,16 +45,15 @@ await fastify.register(swaggerUi, {
   uiConfig: { docExpansion: 'list', deepLinking: false },
 });
 
-// Register API routes (these take priority)
+// Register API routes
+await fastify.register(authRoutes);
 await fastify.register(statusRoutes);
 
 if (isDev) {
   fastify.log.info('Development mode: mounting Vite as middleware (single port)');
 
-  // Register middie middleware support
   await fastify.register(middie);
 
-  // Create Vite in middleware mode — no separate port
   const vite: ViteDevServer = await createViteServer({
     configFile: false,
     plugins: [vue()],
