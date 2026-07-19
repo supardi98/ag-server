@@ -1,0 +1,11 @@
+{
+  "name": "ag-remote-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monorepo Workspace for Antigravity Remote",
+  "scripts": {
+    "dev": "npm run dev --prefix backend",
+    "build": "npm run build --prefix frontend && npm run build --prefix backend",
+    "start": "npm run start --prefix backend"
+  }
+}
