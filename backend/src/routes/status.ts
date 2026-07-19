@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import net from 'net';
+import { execSync } from 'child_process';
 import { dbService } from '../services/db.js';
 
 // Helper to check if a TCP port is open/listening locally
@@ -26,6 +27,17 @@ function checkPort(port: number, host: string): Promise<boolean> {
 
     socket.connect(port, host);
   });
+}
+
+// Helper to check if Language Server process is running in the OS
+function isLanguageServerRunning(): boolean {
+  try {
+    // pgrep exits with 0 if matching process is found, 1 if not
+    execSync('pgrep -f "language_server"');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function statusRoutes(fastify: FastifyInstance) {
@@ -56,10 +68,13 @@ export async function statusRoutes(fastify: FastifyInstance) {
       // Check if Antigravity's CDP port is open and listening
       const cdpConnected = await checkPort(cdpPort, cdpHost);
 
+      // Check if Language Server process is alive
+      const lsConnected = isLanguageServerRunning();
+
       return {
         status: 'ok',
         cdpConnected,
-        lsConnected: false, // Language Server status can be wired up here if needed
+        lsConnected,
         timestamp: new Date().toISOString(),
       };
     }
