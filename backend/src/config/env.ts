@@ -16,6 +16,10 @@ export const config = {
   CDP_HOST: process.env.CDP_HOST || '127.0.0.1',
   CDP_PORT: parseInt(process.env.CDP_PORT || '9000', 10),
 
+  // Antigravity Process
+  ANTIGRAVITY_PATH: process.env.ANTIGRAVITY_PATH || 'antigravity',
+  ANTIGRAVITY_PORT: parseInt(process.env.ANTIGRAVITY_PORT || '9000', 10),
+
   // Auth
   AUTH_ENABLED: process.env.AUTH_ENABLED === 'true',
   AUTH_PASSWORD: process.env.AUTH_PASSWORD || '',

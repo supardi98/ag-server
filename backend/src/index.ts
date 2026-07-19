@@ -13,6 +13,8 @@ import { fileURLToPath } from 'url';
 import { config } from './config/env.js';
 import { statusRoutes } from './routes/status.js';
 import { authRoutes } from './routes/auth.js';
+import { agentRoutes } from './routes/agent.js';
+import { settingsRoutes } from './routes/settings.js';
 import { registerSession } from './plugins/session.js';
 import { dbService } from './services/db.js';
 
@@ -47,6 +49,8 @@ await fastify.register(swaggerUi, {
 
 // Register API routes
 await fastify.register(authRoutes);
+await fastify.register(agentRoutes);
+await fastify.register(settingsRoutes);
 await fastify.register(statusRoutes);
 
 if (isDev) {
