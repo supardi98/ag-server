@@ -113,24 +113,7 @@ const toggleReviewStep = (stepIndex: number) => {
   expandedReviewSteps.value = new Set(expandedReviewSteps.value);
 };
 
-// Initialize steps cache from localStorage to preserve across page refreshes
-const loadCacheFromStorage = (): Record<string, any[]> => {
-  try {
-    const cached = localStorage.getItem('ag_conv_steps_cache');
-    if (!cached) return {};
-    const parsed = JSON.parse(cached);
-    // Purge large historic datasets from cache to prevent rendering lag
-    for (const key of Object.keys(parsed)) {
-      if (Array.isArray(parsed[key]) && parsed[key].length > 30) {
-        delete parsed[key];
-      }
-    }
-    return parsed;
-  } catch {
-    return {};
-  }
-};
-const conversationStepsCache = ref<Record<string, any[]>>(loadCacheFromStorage());
+const conversationStepsCache = ref<Record<string, any[]>>({});
 
 // Grouped Steps Logic (consolidates multiple agent interactions into a single bubble)
 interface StepGroup {
@@ -1063,13 +1046,6 @@ watch(activeConversationId, async (newId) => {
       totalSteps.value = data.totalSteps || steps.length;
       
       conversationStepsCache.value[newId] = steps;
-      
-      // Save cache to localStorage
-      try {
-        localStorage.setItem('ag_conv_steps_cache', JSON.stringify(conversationStepsCache.value));
-      } catch (e) {
-        console.warn('Failed to save steps cache to localStorage', e);
-      }
       
       // Update view if the user is still looking at this conversation
       if (activeConversationId.value === newId) {
