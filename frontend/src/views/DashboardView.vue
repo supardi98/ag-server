@@ -69,6 +69,9 @@ const agentTyping = ref(false);
 const rawHtml = ref('');
 const rawCss = ref('');
 
+// Image preview modal state
+const previewImage = ref<string | null>(null);
+
 // Proceed / Permission detection from CDP
 const proceedAvailable = ref(false);
 const proceedLoading = ref(false);
@@ -1600,8 +1603,8 @@ onUnmounted(() => {
                           <!-- Antigravity Native Media Structure -->
                           <div v-if="group.step.userInput.media && group.step.userInput.media.length > 0" class="user-items-container">
                             <template v-for="(m, idx) in group.step.userInput.media" :key="'media-'+idx">
-                              <img v-if="m.thumbnail" :src="'data:' + (m.mimeType || 'image/png') + ';base64,' + m.thumbnail" class="user-img-attachment" :title="m.description || 'Attached Image'" />
-                              <img v-else-if="m.inlineData" :src="'data:' + (m.mimeType || 'image/png') + ';base64,' + m.inlineData" class="user-img-attachment" :title="m.description || 'Attached Image'" />
+                              <img v-if="m.thumbnail" @click="previewImage = 'data:' + (m.mimeType || 'image/png') + ';base64,' + m.thumbnail" :src="'data:' + (m.mimeType || 'image/png') + ';base64,' + m.thumbnail" class="user-img-attachment clickable-img" :title="m.description || 'Attached Image'" />
+                              <img v-else-if="m.inlineData" @click="previewImage = 'data:' + (m.mimeType || 'image/png') + ';base64,' + m.inlineData" :src="'data:' + (m.mimeType || 'image/png') + ';base64,' + m.inlineData" class="user-img-attachment clickable-img" :title="m.description || 'Attached Image'" />
                               <div v-else class="user-file-attachment">Attachment: {{ m.description || m.uri || 'unknown file' }}</div>
                             </template>
                           </div>
@@ -1609,10 +1612,10 @@ onUnmounted(() => {
                           <!-- Standard items array (if any) -->
                           <div v-if="group.step.userInput.items && group.step.userInput.items.length > 0" class="user-items-container">
                             <template v-for="(item, idx) in group.step.userInput.items" :key="'item-'+idx">
-                              <div v-if="item.text && item.text !== group.step.userInput.userResponse" v-html="renderMarkdown(item.text)"></div>
-                              <img v-else-if="item.image?.base64" :src="'data:' + (item.image.mimeType || 'image/png') + ';base64,' + item.image.base64" class="user-img-attachment" />
-                              <img v-else-if="item.image?.url" :src="item.image.url" class="user-img-attachment" />
-                              <img v-else-if="item.inlineData?.data" :src="'data:' + (item.inlineData.mimeType || 'image/png') + ';base64,' + item.inlineData.data" class="user-img-attachment" />
+                              <div class="user-item-text" v-if="item.text && item.text !== group.step.userInput.userResponse" v-html="renderMarkdown(item.text)"></div>
+                              <img v-else-if="item.image?.base64" @click="previewImage = 'data:' + (item.image.mimeType || 'image/png') + ';base64,' + item.image.base64" :src="'data:' + (item.image.mimeType || 'image/png') + ';base64,' + item.image.base64" class="user-img-attachment clickable-img" />
+                              <img v-else-if="item.image?.url" @click="previewImage = item.image.url" :src="item.image.url" class="user-img-attachment clickable-img" />
+                              <img v-else-if="item.inlineData?.data" @click="previewImage = 'data:' + (item.inlineData.mimeType || 'image/png') + ';base64,' + item.inlineData.data" :src="'data:' + (item.inlineData.mimeType || 'image/png') + ';base64,' + item.inlineData.data" class="user-img-attachment clickable-img" />
                               <div v-else-if="item.file" class="user-file-attachment">File: {{ item.file.name || 'unknown' }}</div>
                             </template>
                           </div>
@@ -2208,11 +2211,39 @@ onUnmounted(() => {
         <AgButton variant="danger" @click="showErrorModal = false">Close</AgButton>
       </template>
     </AgModal>
+    <!-- Image Preview Modal -->
+    <AgModal
+      :show="!!previewImage"
+      title="Image Preview"
+      @close="previewImage = null"
+    >
+      <div class="image-preview-container">
+        <img v-if="previewImage" :src="previewImage" class="image-preview-full" />
+      </div>
+    </AgModal>
   </div>
 </div>
 </template>
 
 <style scoped>
+.staged-img-thumb {
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.staged-img-thumb:hover {
+  opacity: 0.8;
+}
+.image-preview-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 10px;
+}
+.image-preview-full {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+}
 .antigravity-view {
   display: flex;
   height: 100%;
@@ -3439,6 +3470,14 @@ onUnmounted(() => {
   border-bottom-right-radius: 4px;
 }
 
+.user-message .message-content {
+  overflow-wrap: break-word;
+  word-break: break-all; /* Break long unbroken strings like base64 */
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 4px; /* for scrollbar */
+}
+
 .user-message .message-header .sender-name {
   color: rgba(255, 255, 255, 0.95);
 }
@@ -3580,16 +3619,43 @@ onUnmounted(() => {
 }
 .user-items-container {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 8px;
 }
+.user-item-text {
+  width: 100%;
+}
 .user-img-attachment {
-  max-width: 100%;
+  width: 150px;
+  height: 150px;
   border-radius: 12px;
   border: 1px solid var(--border-color);
-  object-fit: contain;
+  object-fit: cover;
   background-color: var(--card-bg-elevated);
+}
+.clickable-img {
+  cursor: pointer;
+  transition: transform 0.2s, opacity 0.2s;
+}
+.clickable-img:hover {
+  transform: scale(1.02);
+  opacity: 0.9;
+}
+.image-preview-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 200px;
+  background: var(--card-bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.image-preview-full {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
 }
 
 /* Lists styles */
