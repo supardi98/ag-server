@@ -61,6 +61,23 @@ const CAPTURE_SCRIPT = `
       }
       target.remove();
     });
+
+    // We only want to stream the CURRENT (last) assistant response to avoid duplicating history.
+    let listContainer = clone;
+    // Walk down up to 3 levels to find a container with more than 1 child (the message list)
+    for (let i = 0; i < 3; i++) {
+      if (listContainer.children.length === 1) {
+        listContainer = listContainer.firstElementChild;
+      } else {
+        break;
+      }
+    }
+    // If it has multiple children, assume it's the message list. Keep only the last one.
+    if (listContainer && listContainer.children.length > 1) {
+      while (listContainer.children.length > 1) {
+        listContainer.firstElementChild.remove();
+      }
+    }
   }
 
   let html = clone.innerHTML;

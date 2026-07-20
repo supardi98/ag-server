@@ -1176,8 +1176,8 @@ const availableModels = [
   { name: 'Gemini 3.5 Flash (Low)', id: 'MODEL_PLACEHOLDER_M26', tag: 'Fast' },
   { name: 'Gemini 3.1 Pro (Low)', id: 'gemini-3.1-pro-low' },
   { name: 'Gemini 3.1 Pro (High)', id: 'gemini-3.1-pro-high' },
-  { name: 'Claude Sonnet 4.6 (Thinking)', id: 'claude-sonnet-4.6', warning: true },
-  { name: 'Claude Opus 4.6 (Thinking)', id: 'claude-opus-4.6', warning: true },
+  { name: 'Claude Sonnet 4.6 (Thinking)', id: 'claude-sonnet-4.6' },
+  { name: 'Claude Opus 4.6 (Thinking)', id: 'claude-opus-4.6' },
   { name: 'GPT-OSS 120B (Medium)', id: 'gpt-oss-120b', warning: true }
 ];
 
