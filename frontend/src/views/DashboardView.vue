@@ -69,6 +69,12 @@ const agentTyping = ref(false);
 const rawHtml = ref('');
 const rawCss = ref('');
 
+// Proceed / Permission detection from CDP
+const proceedAvailable = ref(false);
+const proceedLoading = ref(false);
+const permissionBanner = ref<{ options: { index: number; label: string }[]; buttons: { index: number; label: string }[]; description: string } | null>(null);
+const permissionLoading = ref(false);
+
 // Dynamic style injector for captured CSS
 const updateDynamicStyles = (cssString: string) => {
   let styleEl = document.getElementById('ag-dynamic-styles');
@@ -1057,6 +1063,8 @@ watch(activeConversationId, async (newId) => {
       if (data.cdpSnapshot) {
         agentTyping.value = data.cdpSnapshot.agentRunning;
         rawHtml.value = data.cdpSnapshot.html || '';
+        proceedAvailable.value = !!data.cdpSnapshot.proceedAvailable;
+        permissionBanner.value = data.cdpSnapshot.permissionBanner || null;
         if (data.cdpSnapshot.css && data.cdpSnapshot.css !== rawCss.value) {
           rawCss.value = data.cdpSnapshot.css;
           updateDynamicStyles(data.cdpSnapshot.css);
@@ -1224,6 +1232,41 @@ const loadActiveConversationSteps = async (id: string) => {
     }
   } catch (err) {
     console.error('Failed to reload steps', err);
+  }
+};
+// Handle "Proceed" button click — proxy to Antigravity via CDP
+const handleProceed = async () => {
+  if (!activeConversationId.value || proceedLoading.value) return;
+  proceedLoading.value = true;
+  try {
+    const res = await fetch(`/api/conversations/${activeConversationId.value}/proceed`, { method: 'POST' });
+    if (res.ok) {
+      proceedAvailable.value = false;
+    }
+  } catch (err) {
+    console.error('Proceed click failed', err);
+  } finally {
+    proceedLoading.value = false;
+  }
+};
+
+// Handle permission button click — proxy to Antigravity via CDP
+const handlePermissionClick = async (index: number) => {
+  if (!activeConversationId.value || permissionLoading.value) return;
+  permissionLoading.value = true;
+  try {
+    const res = await fetch(`/api/conversations/${activeConversationId.value}/permission`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index })
+    });
+    if (res.ok) {
+      permissionBanner.value = null;
+    }
+  } catch (err) {
+    console.error('Permission click failed', err);
+  } finally {
+    permissionLoading.value = false;
   }
 };
 
@@ -1552,7 +1595,34 @@ onUnmounted(() => {
                           <span class="sender-name">User</span>
                           <span class="message-time">{{ formatMessageTime(group.step.metadata?.createdAt) }}</span>
                         </div>
-                        <div class="message-content" v-html="renderMarkdown(group.step.userInput.userResponse || group.step.userInput.items?.[0]?.text)"></div>
+                        <div class="message-content">
+                          <div v-if="group.step.userInput.userResponse" v-html="renderMarkdown(group.step.userInput.userResponse)"></div>
+                          <!-- Antigravity Native Media Structure -->
+                          <div v-if="group.step.userInput.media && group.step.userInput.media.length > 0" class="user-items-container">
+                            <template v-for="(m, idx) in group.step.userInput.media" :key="'media-'+idx">
+                              <img v-if="m.thumbnail" :src="'data:' + (m.mimeType || 'image/png') + ';base64,' + m.thumbnail" class="user-img-attachment" :title="m.description || 'Attached Image'" />
+                              <img v-else-if="m.inlineData" :src="'data:' + (m.mimeType || 'image/png') + ';base64,' + m.inlineData" class="user-img-attachment" :title="m.description || 'Attached Image'" />
+                              <div v-else class="user-file-attachment">Attachment: {{ m.description || m.uri || 'unknown file' }}</div>
+                            </template>
+                          </div>
+                          
+                          <!-- Standard items array (if any) -->
+                          <div v-if="group.step.userInput.items && group.step.userInput.items.length > 0" class="user-items-container">
+                            <template v-for="(item, idx) in group.step.userInput.items" :key="'item-'+idx">
+                              <div v-if="item.text && item.text !== group.step.userInput.userResponse" v-html="renderMarkdown(item.text)"></div>
+                              <img v-else-if="item.image?.base64" :src="'data:' + (item.image.mimeType || 'image/png') + ';base64,' + item.image.base64" class="user-img-attachment" />
+                              <img v-else-if="item.image?.url" :src="item.image.url" class="user-img-attachment" />
+                              <img v-else-if="item.inlineData?.data" :src="'data:' + (item.inlineData.mimeType || 'image/png') + ';base64,' + item.inlineData.data" class="user-img-attachment" />
+                              <div v-else-if="item.file" class="user-file-attachment">File: {{ item.file.name || 'unknown' }}</div>
+                            </template>
+                          </div>
+                          
+                          <!-- Empty fallback -->
+                          <div v-if="!group.step.userInput.userResponse && (!group.step.userInput.items || group.step.userInput.items.length === 0) && (!group.step.userInput.media || group.step.userInput.media.length === 0)" class="empty-message">
+                            <em>Empty message (Debug: {{ Object.keys(group.step.userInput || {}).join(', ') }})</em>
+                            <pre style="font-size: 10px; max-height: 200px; overflow: auto; margin-top: 4px;">{{ JSON.stringify(group.step.userInput) }}</pre>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -1740,6 +1810,70 @@ onUnmounted(() => {
                     </div>
                     <div class="message-content">
                       <div class="ag-raw-clone ag-raw-clone-isolated" v-html="rawHtml"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <!-- Proceed Request Action -->
+              <div v-if="proceedAvailable && agentTyping" class="chat-step-group">
+                <div class="chat-step">
+                  <div class="message-bubble assistant-message permission-bubble">
+                    <div class="message-header">
+                      <div class="header-left-meta">
+                        <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
+                        <span class="sender-name">Antigravity (Action Required)</span>
+                      </div>
+                    </div>
+                    <div class="message-content">
+                      <div class="permission-prompt">
+                        <p class="permission-text">Antigravity has proposed an implementation plan and is waiting for your review.</p>
+                        <div class="permission-actions">
+                          <button class="ag-btn primary-btn pulse-btn" :disabled="proceedLoading" @click="handleProceed">
+                            <span v-if="proceedLoading"><AgSpinner size="sm"/> Proceeding...</span>
+                            <span v-else>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                              Proceed
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Permission / Command Approval Banner -->
+              <div v-if="permissionBanner && agentTyping" class="chat-step-group">
+                <div class="chat-step">
+                  <div class="message-bubble assistant-message permission-bubble">
+                    <div class="message-header">
+                      <div class="header-left-meta">
+                        <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
+                        <span class="sender-name">Antigravity (Approval Required)</span>
+                      </div>
+                    </div>
+                    <div class="message-content">
+                      <div class="permission-prompt">
+                        <p class="permission-text">{{ permissionBanner.description }}</p>
+                        <div v-if="permissionBanner.options.length > 0" class="permission-options">
+                          <label v-for="opt in permissionBanner.options" :key="opt.index" class="permission-option-label" @click="handlePermissionClick(opt.index)">
+                            <input type="radio" :name="'perm-' + permissionBanner.description" class="permission-radio" />
+                            <span>{{ opt.label }}</span>
+                          </label>
+                        </div>
+                        <div class="permission-actions" v-if="permissionBanner.buttons.length > 0">
+                          <button 
+                            v-for="btn in permissionBanner.buttons" 
+                            :key="btn.index" 
+                            class="ag-btn" 
+                            :class="btn.label.toLowerCase().includes('allow') || btn.label.toLowerCase().includes('confirm') ? 'primary-btn' : 'secondary-btn'"
+                            :disabled="permissionLoading"
+                            @click="handlePermissionClick(btn.index)"
+                          >
+                            {{ btn.label }}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -3439,6 +3573,24 @@ onUnmounted(() => {
 .message-content :deep(h2) { font-size: 16px; }
 .message-content :deep(h3) { font-size: 14px; }
 .message-content :deep(h4) { font-size: 13px; }
+
+.empty-message {
+  opacity: 0.6;
+  font-size: 0.9em;
+}
+.user-items-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+.user-img-attachment {
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  object-fit: contain;
+  background-color: var(--card-bg-elevated);
+}
 
 /* Lists styles */
 .message-content :deep(ul),

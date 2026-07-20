@@ -666,4 +666,78 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
       return { ok: true };
     }
   );
+
+  // POST /api/conversations/:id/proceed — Click the Proceed button in Antigravity
+  fastify.post(
+    '/api/conversations/:id/proceed',
+    {
+      schema: {
+        description: 'Click the Proceed button in the active Antigravity session',
+        tags: ['conversations'],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }
+          }
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              clicked: { type: 'string' }
+            }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const result = await cdpService.clickProceed();
+      if (!result.ok) {
+        return reply.code(500).send({ error: `Proceed failed: ${result.reason}` });
+      }
+      return result;
+    }
+  );
+
+  // POST /api/conversations/:id/permission — Click a permission option in Antigravity
+  fastify.post(
+    '/api/conversations/:id/permission',
+    {
+      schema: {
+        description: 'Click a permission option (radio/button) in the active session',
+        tags: ['conversations'],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }
+          }
+        },
+        body: {
+          type: 'object',
+          required: ['index'],
+          properties: {
+            index: { type: 'number' }
+          }
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              label: { type: 'string' }
+            }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { index } = request.body as { index: number };
+      const result = await cdpService.clickPermission(index);
+      if (!result.ok) {
+        return reply.code(500).send({ error: `Permission click failed: ${result.reason}` });
+      }
+      return result;
+    }
+  );
 }

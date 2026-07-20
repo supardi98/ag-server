@@ -79,6 +79,23 @@ const CAPTURE_SCRIPT = `
       }
     }
   }
+  // -- Convert images to base64 to fix cross-origin blob/relative URL issues --
+  const imgs = clone.querySelectorAll('img');
+  for (const img of imgs) {
+    if (img.src && !img.src.startsWith('data:')) {
+      try {
+        const res = await fetch(img.src);
+        const blob = await res.blob();
+        const reader = new FileReader();
+        const base64data = await new Promise(resolve => {
+          reader.onloadend = () => resolve(reader.result);
+          reader.readAsDataURL(blob);
+        });
+        img.src = base64data;
+        img.removeAttribute('srcset');
+      } catch (e) {}
+    }
+  }
 
   let html = clone.innerHTML;
   html = html.replace(/class="([^"]*)"/g, (match, classes) => {
@@ -108,7 +125,63 @@ const CAPTURE_SCRIPT = `
     css = ':root{' + themeRules.join(';') + '}\\n' + css;
   }
 
-  return { html, css, agentRunning };
+  // -- Detect "Proceed" button (artifact RequestFeedback) --
+  // AG renders a small play-icon button when it wants user to confirm a plan.
+  // It can show as a button with text "Proceed" or as a play-triangle SVG button.
+  let proceedAvailable = false;
+  let proceedLabel = '';
+  try {
+    const allBtns = Array.from(document.querySelectorAll('button'));
+    for (const btn of allBtns) {
+      const text = (btn.textContent || '').trim();
+      if (/^Proceed$/i.test(text) && btn.offsetParent !== null) {
+        proceedAvailable = true;
+        proceedLabel = text;
+        break;
+      }
+    }
+    // Also check for the play-triangle SVG button (lucide-play icon)
+    if (!proceedAvailable) {
+      const playSvg = document.querySelector('button svg.lucide-play');
+      if (playSvg) {
+        const btn = playSvg.closest('button');
+        if (btn && btn.offsetParent !== null) {
+          proceedAvailable = true;
+          proceedLabel = 'Proceed';
+        }
+      }
+    }
+  } catch {}
+
+  // -- Detect permission/approval banner --
+  // AG shows a radiogroup + Allow/Deny buttons when it needs command approval.
+  let permissionBanner = null;
+  try {
+    const radioGroup = document.querySelector('[role="radiogroup"]');
+    if (radioGroup) {
+      let banner = radioGroup;
+      for (let i = 0; i < 10; i++) {
+        if (!banner.parentElement || banner.parentElement === document.body) break;
+        banner = banner.parentElement;
+        if (/allow|permission/i.test(banner.textContent) && banner.querySelectorAll('button').length >= 1) break;
+      }
+      // Extract the options and buttons
+      const options = [];
+      banner.querySelectorAll('[role="radiogroup"] label').forEach((el, i) => {
+        options.push({ index: i, label: (el.textContent || '').trim().substring(0, 80) });
+      });
+      const buttons = [];
+      let btnIdx = options.length;
+      banner.querySelectorAll('button').forEach(el => {
+        buttons.push({ index: btnIdx, label: (el.textContent || '').trim().substring(0, 50) });
+        btnIdx++;
+      });
+      const description = (banner.textContent || '').trim().substring(0, 300);
+      permissionBanner = { options, buttons, description };
+    }
+  } catch {}
+
+  return { html, css, agentRunning, proceedAvailable, proceedLabel, permissionBanner };
 })()
 `;
 
@@ -281,6 +354,94 @@ class CdpPollingService extends EventEmitter {
         returnByValue: true,
       });
 
+      if (exceptionDetails) {
+        return { ok: false, reason: exceptionDetails.exception?.description || 'evaluation_error' };
+      }
+      return result.value;
+    } catch (err: any) {
+      return { ok: false, reason: err.message };
+    }
+  }
+
+  async clickProceed(): Promise<{ ok: boolean; reason?: string }> {
+    if (!this.client) return { ok: false, reason: 'no_cdp_client' };
+
+    const expression = `
+      (async () => {
+        // Try text-based "Proceed" button first
+        const allBtns = Array.from(document.querySelectorAll('button'));
+        for (const btn of allBtns) {
+          const text = (btn.textContent || '').trim();
+          if (/^Proceed$/i.test(text) && btn.offsetParent !== null) {
+            btn.click();
+            return { ok: true, clicked: text };
+          }
+        }
+        // Try play-triangle SVG button
+        const playSvg = document.querySelector('button svg.lucide-play');
+        if (playSvg) {
+          const btn = playSvg.closest('button');
+          if (btn && btn.offsetParent !== null) {
+            btn.click();
+            return { ok: true, clicked: 'play-icon' };
+          }
+        }
+        return { ok: false, reason: 'no_proceed_button' };
+      })()
+    `;
+
+    try {
+      const { result, exceptionDetails } = await this.client.Runtime.evaluate({
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      if (exceptionDetails) {
+        return { ok: false, reason: exceptionDetails.exception?.description || 'evaluation_error' };
+      }
+      return result.value;
+    } catch (err: any) {
+      return { ok: false, reason: err.message };
+    }
+  }
+
+  async clickPermission(index: number): Promise<{ ok: boolean; reason?: string; label?: string }> {
+    if (!this.client) return { ok: false, reason: 'no_cdp_client' };
+
+    const safeIndex = JSON.stringify(index);
+    const expression = `
+      (async () => {
+        const idx = ${safeIndex};
+        const radioGroup = document.querySelector('[role="radiogroup"]');
+        if (!radioGroup) return { ok: false, reason: 'no_radiogroup' };
+
+        let banner = radioGroup;
+        for (let i = 0; i < 10; i++) {
+          if (!banner.parentElement || banner.parentElement === document.body) break;
+          banner = banner.parentElement;
+          if (/allow|permission/i.test(banner.textContent) && banner.querySelectorAll('button').length >= 1) break;
+        }
+
+        const elements = [];
+        banner.querySelectorAll('[role="radiogroup"] label').forEach(el => elements.push(el));
+        banner.querySelectorAll('button').forEach(el => elements.push(el));
+
+        if (idx >= 0 && idx < elements.length) {
+          const target = elements[idx];
+          const label = (target.textContent || '').trim().substring(0, 50);
+          target.click();
+          return { ok: true, label };
+        }
+        return { ok: false, reason: 'index_out_of_range', total: elements.length };
+      })()
+    `;
+
+    try {
+      const { result, exceptionDetails } = await this.client.Runtime.evaluate({
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
       if (exceptionDetails) {
         return { ok: false, reason: exceptionDetails.exception?.description || 'evaluation_error' };
       }
