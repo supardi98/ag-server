@@ -257,19 +257,7 @@ async function fetchProjectsData(): Promise<any> {
       const conversations = Object.entries(summaries)
         .filter(([id, info]: [string, any]) => {
           const pid = info?.trajectoryMetadata?.projectId;
-          if (pid) return pid === project.id;
-          
-          // Fallback matching by workspace folder URI for newly created conversations via StartCascade
-          const ws = info?.workspaces?.[0];
-          const wsUri = ws?.workspaceFolderAbsoluteUri;
-          const nWsUri = normUri(wsUri);
-          const nProjUri = normUri(project.folderUri);
-          const match = wsUri && nWsUri === nProjUri;
-          
-          if (!pid) {
-             console.log(`[Sessions] Eval ${id.substring(0,6)}... wsUri="${wsUri}" -> nWsUri="${nWsUri}" vs nProjUri="${nProjUri}". Match? ${match}`);
-          }
-          return match;
+          return pid === project.id;
         })
         .map(([id, info]: [string, any]) => ({
           id,
@@ -282,7 +270,19 @@ async function fetchProjectsData(): Promise<any> {
       return { id: project.id, name: project.name, folderUri: project.folderUri, conversations };
     });
 
-  return { projects };
+  // Collect conversations that didn't match any project
+  const assignedIds = new Set(projects.flatMap(p => p.conversations.map(c => c.id)));
+  const unassignedConversations = Object.entries(summaries)
+    .filter(([id]) => !assignedIds.has(id))
+    .map(([id, info]: [string, any]) => ({
+      id,
+      title: info.summary || 'Untitled Conversation',
+      lastModifiedTime: info.lastModifiedTime,
+      status: info.status,
+    }))
+    .sort((a, b) => (b.lastModifiedTime || '').localeCompare(a.lastModifiedTime || ''));
+
+  return { projects, unassignedConversations };
 }
 
 async function refreshCache(): Promise<void> {
@@ -455,20 +455,27 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
         body: {
           type: 'object',
           properties: {
-            folderUri: { type: 'string' }
+            folderUri: { type: 'string' },
+            projectId: { type: 'string' }
           }
         }
       },
       preHandler: requireAuth,
     },
     async (request) => {
-      const { folderUri } = request.body as { folderUri?: string };
+      const { folderUri, projectId } = request.body as { folderUri?: string; projectId?: string };
       const body: any = {
         source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT',
         trajectoryType: 'CORTEX_TRAJECTORY_TYPE_CASCADE'
       };
       if (folderUri) {
-        body.workspaceUris = [folderUri];
+        // The IDE's desktop app expects a plain path for workspaceUris to correctly bind it to a project.
+        // If we send file://, it ends up in "Default Project" instead of the target project folder.
+        const plainPath = folderUri.replace(/^file:\/\//i, '');
+        body.workspaceUris = [plainPath];
+      }
+      if (projectId && projectId !== 'outside-of-project') {
+        body.trajectoryMetadata = { projectId };
       }
       const result = await callLsApi('StartCascade', body);
       return { ok: true, cascadeId: result.cascadeId };

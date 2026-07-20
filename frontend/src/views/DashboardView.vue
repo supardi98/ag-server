@@ -16,6 +16,7 @@ import {
   ChevronUp as ChevronUpIcon,
   File as FileIcon,
   Wrench as WrenchIcon,
+  Loader2 as SpinnerIcon,
 } from 'lucide-vue-next';
 import { marked } from 'marked';
 import AgButton from '../components/AgButton.vue';
@@ -833,6 +834,8 @@ const fetchProjects = async () => {
     if (!res.ok) return;
     const data = await res.json();
     projects.value = data.projects || [];
+    const unassigned = data.unassignedConversations || [];
+    unassignedConversations.value = unassigned;
     projectsCachedAt.value = data.cachedAt || null;
     // Auto-expand all projects initially
     const expanded = new Set<string>();
@@ -1200,6 +1203,16 @@ const activeContextScope = ref('Local');
 const showWorkspaceDropdown = ref(false);
 const showModelDropdown = ref(false);
 const showContextDropdown = ref(false);
+const unassignedConversations = ref<any[]>([]);
+
+const allConversations = computed(() => {
+  let all: any[] = [...unassignedConversations.value];
+  return all.sort((a, b) => {
+    const ta = new Date(a.lastModifiedTime || 0).getTime();
+    const tb = new Date(b.lastModifiedTime || 0).getTime();
+    return tb - ta;
+  });
+});
 
 const activeSelectedProject = computed(() => {
   if (!selectedProjectUri.value && sortedProjects.value.length > 0) {
@@ -1379,6 +1392,7 @@ const handleInitNewConversation = async () => {
   // Find selected workspace folder
   const activeProj = activeSelectedProject.value;
   const folderUri = activeProj ? activeProj.folderUri : '';
+  const projectId = activeProj ? activeProj.id : '';
 
   try {
     // 1. Initialize new cascade
@@ -1387,7 +1401,7 @@ const handleInitNewConversation = async () => {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ folderUri })
+      body: JSON.stringify({ folderUri, projectId })
     });
     if (!initRes.ok) throw new Error('Failed to start cascade');
     const { cascadeId } = await initRes.json();
@@ -1459,114 +1473,150 @@ onUnmounted(() => {
         </AgButton>
       </div>
 
-      <div class="sidebar-section-header">
-        <span class="sidebar-section-title">Projects</span>
-        <div class="sidebar-header-actions">
-          <button
-            class="refresh-projects-btn"
-            :disabled="projectsRefreshing"
-            @click="handleRefreshProjects"
-            title="Refresh projects"
-          >
-            <RefreshCwIcon class="refresh-projects-icon" :class="{ 'spin': projectsRefreshing }" />
-          </button>
-
-          <!-- Sort dropdown -->
-          <div class="sort-dropdown-wrapper">
+      <div class="sidebar-scroll-area">
+        <div class="sidebar-section-header">
+          <span class="sidebar-section-title">Projects</span>
+          <div class="sidebar-header-actions">
             <button
               class="refresh-projects-btn"
-              :class="{ 'sort-btn--active': sortKey !== 'last-updated' }"
-              @click.stop="showSortMenu = !showSortMenu"
-              title="Sort conversations"
+              :disabled="projectsRefreshing"
+              @click="handleRefreshProjects"
+              title="Refresh projects"
             >
-              <SortIcon class="refresh-projects-icon" />
+              <RefreshCwIcon class="refresh-projects-icon" :class="{ 'spin': projectsRefreshing }" />
             </button>
-            <div v-if="showSortMenu" class="sort-menu">
-              <div class="sort-menu-group">Sort Conversations</div>
+
+            <!-- Sort dropdown -->
+            <div class="sort-dropdown-wrapper">
               <button
-                v-for="opt in sortOptions"
-                :key="opt.key"
-                class="sort-menu-item"
-                :class="{ 'sort-menu-item--active': sortKey === opt.key }"
-                @click="setSortKey(opt.key)"
+                class="refresh-projects-btn"
+                :class="{ 'sort-btn--active': sortKey !== 'last-updated' }"
+                @click.stop="showSortMenu = !showSortMenu"
+                title="Sort conversations"
               >
-                <CheckIcon v-if="sortKey === opt.key" class="sort-check-icon" />
-                <span v-else class="sort-check-spacer"></span>
-                {{ opt.label }}
+                <SortIcon class="refresh-projects-icon" />
+              </button>
+              <div v-if="showSortMenu" class="sort-menu">
+                <div class="sort-menu-group">Sort Conversations</div>
+                <button
+                  v-for="opt in sortOptions"
+                  :key="opt.key"
+                  class="sort-menu-item"
+                  :class="{ 'sort-menu-item--active': sortKey === opt.key }"
+                  @click="setSortKey(opt.key)"
+                >
+                  <CheckIcon v-if="sortKey === opt.key" class="sort-check-icon" />
+                  <span v-else class="sort-check-spacer"></span>
+                  {{ opt.label }}
+                </button>
+              </div>
+            </div>
+
+            <!-- New Folder Plus icon button to open Connect Workspace modal -->
+            <button
+              class="refresh-projects-btn"
+              @click="showConnectModal = true"
+              title="Connect local workspace folder"
+            >
+              <FolderPlusIcon class="refresh-projects-icon" />
+            </button>
+          </div>
+        </div>
+        <div v-if="projectsRefreshing" class="sidebar-refreshing">Refreshing...</div>
+
+        <div v-if="projectsLoading" class="sidebar-empty">Loading projects...</div>
+        <div v-else-if="projects.length === 0" class="sidebar-empty">No projects found</div>
+
+        <div v-else class="project-tree">
+          <div
+            v-for="project in sortedProjects"
+            :key="project.folderUri"
+            class="project-group"
+          >
+            <!-- Project folder header -->
+            <div class="project-group-header">
+              <button
+                class="project-folder-btn"
+                @click="toggleProjectFolder(project.folderUri)"
+              >
+                <ChevronRightIcon
+                  class="chevron-icon"
+                  :class="{ 'chevron-open': expandedProjects.has(project.folderUri) }"
+                />
+                <component
+                  :is="expandedProjects.has(project.folderUri) ? FolderOpenIcon : FolderIcon"
+                  class="folder-icon"
+                />
+                <span class="project-name">{{ project.name }}</span>
+              </button>
+              <button
+                class="add-conv-btn"
+                :title="`New conversation in ${project.name}`"
+                @click.stop="selectProjectFromSidebar(project)"
+              >
+                <PlusIcon class="add-conv-icon" />
+              </button>
+              <span class="conv-count">{{ project.conversations.length }}</span>
+            </div>
+
+            <!-- Conversations inside project -->
+            <div
+              v-if="expandedProjects.has(project.folderUri)"
+              class="conversation-list"
+            >
+              <div v-if="project.conversations.length === 0" class="conv-empty">
+                No conversations
+              </div>
+              <button
+                v-for="conv in project.conversations"
+                :key="conv.id"
+                class="conv-item"
+                :class="{ 'conv-item--active': activeConversationId === conv.id }"
+                @click="activeConversationId = conv.id"
+              >
+                <ConversationIcon class="conv-icon" />
+                <span class="conv-title">
+                  {{ conv.title }}
+                </span>
+                <SpinnerIcon v-if="isConversationRunning(conv.id)" class="conv-running-spinner" title="Running active cascade..." />
+                <span class="conv-time">{{ formatRelativeTime(conv.lastModifiedTime) }}</span>
               </button>
             </div>
           </div>
-
-          <!-- New Folder Plus icon button to open Connect Workspace modal -->
-          <button
-            class="refresh-projects-btn"
-            @click="showConnectModal = true"
-            title="Connect local workspace folder"
-          >
-            <FolderPlusIcon class="refresh-projects-icon" />
-          </button>
         </div>
-      </div>
-      <div v-if="projectsRefreshing" class="sidebar-refreshing">Refreshing...</div>
 
-      <div v-if="projectsLoading" class="sidebar-empty">Loading projects...</div>
-      <div v-else-if="projects.length === 0" class="sidebar-empty">No projects found</div>
-
-      <div v-else class="project-tree">
-        <div
-          v-for="project in sortedProjects"
-          :key="project.folderUri"
-          class="project-group"
-        >
-          <!-- Project folder header -->
-          <div class="project-group-header">
-            <button
-              class="project-folder-btn"
-              @click="toggleProjectFolder(project.folderUri)"
-            >
-              <ChevronRightIcon
-                class="chevron-icon"
-                :class="{ 'chevron-open': expandedProjects.has(project.folderUri) }"
-              />
-              <component
-                :is="expandedProjects.has(project.folderUri) ? FolderOpenIcon : FolderIcon"
-                class="folder-icon"
-              />
-              <span class="project-name">{{ project.name }}</span>
-            </button>
+        <!-- Global Conversations Section -->
+        <div class="sidebar-section-header" style="margin-top: 1.5rem;">
+          <span class="sidebar-section-title">Conversations</span>
+          <div class="sidebar-header-actions">
             <button
               class="add-conv-btn"
-              :title="`New conversation in ${project.name}`"
-              @click.stop="selectProjectFromSidebar(project)"
+              title="New conversation"
+              @click="activeConversationId = null; router.push('/')"
             >
               <PlusIcon class="add-conv-icon" />
             </button>
-            <span class="conv-count">{{ project.conversations.length }}</span>
           </div>
-
-          <!-- Conversations inside project -->
-          <div
-            v-if="expandedProjects.has(project.folderUri)"
-            class="conversation-list"
+        </div>
+        
+        <div class="conversation-list global-conversation-list">
+          <div v-if="allConversations.length === 0" class="conv-empty">
+            No conversations
+          </div>
+          <button
+            v-for="conv in allConversations"
+            :key="conv.id"
+            class="conv-item"
+            :class="{ 'conv-item--active': activeConversationId === conv.id }"
+            @click="activeConversationId = conv.id"
           >
-            <div v-if="project.conversations.length === 0" class="conv-empty">
-              No conversations
-            </div>
-            <button
-              v-for="conv in project.conversations"
-              :key="conv.id"
-              class="conv-item"
-              :class="{ 'conv-item--active': activeConversationId === conv.id }"
-              @click="activeConversationId = conv.id"
-            >
-              <ConversationIcon class="conv-icon" />
-              <span class="conv-title">
-                {{ conv.title }}
-                <span v-if="isConversationRunning(conv.id)" class="conv-running-pulse" title="Running active cascade..." />
-              </span>
-              <span class="conv-time">{{ formatRelativeTime(conv.lastModifiedTime) }}</span>
-            </button>
-          </div>
+            <ConversationIcon class="conv-icon" />
+            <span class="conv-title">
+              {{ conv.title }}
+            </span>
+            <SpinnerIcon v-if="isConversationRunning(conv.id)" class="conv-running-spinner" title="Running active cascade..." />
+            <span class="conv-time">{{ formatRelativeTime(conv.lastModifiedTime) }}</span>
+          </button>
         </div>
       </div>
     </aside>
@@ -2463,12 +2513,31 @@ onUnmounted(() => {
   font-style: italic;
 }
 
+.sidebar-scroll-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.sidebar-scroll-area::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll-area::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+.sidebar-scroll-area::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
 .project-tree {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  overflow-y: auto;
-  flex: 1;
 }
 
 .project-group {
@@ -2587,6 +2656,11 @@ onUnmounted(() => {
   margin-bottom: 4px;
 }
 
+.global-conversation-list {
+  padding-left: 0;
+  margin-top: 6px;
+}
+
 .conv-empty {
   font-size: 12px;
   color: var(--text-muted);
@@ -2598,7 +2672,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: none;
   border: none;
   border-radius: var(--radius-sm);
@@ -2620,28 +2694,13 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.conv-running-pulse {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 8px #10b981;
+.conv-running-spinner {
+  width: 12px;
+  height: 12px;
+  color: var(--color-primary);
   flex-shrink: 0;
-  display: inline-block;
-  animation: pulseGlow 1.5s infinite ease-in-out;
-}
-
-@keyframes pulseGlow {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0.4;
-    box-shadow: 0 0 4px #10b981;
-  }
-  50% {
-    transform: scale(1.2);
-    opacity: 1;
-    box-shadow: 0 0 10px #10b981;
-  }
+  animation: spin 1.5s linear infinite;
+  margin-left: 4px;
 }
 
 .conv-item:hover {
