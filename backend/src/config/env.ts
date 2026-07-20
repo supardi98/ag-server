@@ -24,4 +24,7 @@ export const config = {
   AUTH_ENABLED: process.env.AUTH_ENABLED === 'true',
   AUTH_PASSWORD: process.env.AUTH_PASSWORD || '',
   AUTH_SESSION_SECRET: process.env.AUTH_SESSION_SECRET || 'default-secret-change-me',
+  
+  // Proxy
+  PROXY_API_KEY: process.env.PROXY_API_KEY || '',
 };

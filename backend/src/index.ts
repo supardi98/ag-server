@@ -49,6 +49,8 @@ await fastify.register(swaggerUi, {
   uiConfig: { docExpansion: 'list', deepLinking: false },
 });
 
+import { proxyRoutes } from './routes/proxy.js';
+
 // Register API routes
 await fastify.register(authRoutes);
 await fastify.register(agentRoutes);
@@ -56,6 +58,7 @@ await fastify.register(settingsRoutes);
 await fastify.register(sessionsRoutes);
 await fastify.register(statusRoutes);
 await fastify.register(accountsRoutes);
+await fastify.register(proxyRoutes);
 
 if (isDev) {
   fastify.log.info('Development mode: mounting Vite as middleware (single port)');
@@ -73,7 +76,7 @@ if (isDev) {
   // Mount Vite middleware — with appType 'spa', Vite auto-serves index.html
   fastify.use(
     (req: IncomingMessage, res: ServerResponse, next: NextFunction) => {
-      if (req.url?.startsWith('/api') || req.url?.startsWith('/docs')) {
+      if (req.url?.startsWith('/api') || req.url?.startsWith('/docs') || req.url?.startsWith('/v1')) {
         return next();
       }
       vite.middlewares(req, res, next);

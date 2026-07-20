@@ -100,6 +100,8 @@ const iconClass = computed(() => {
   align-items: center;
   gap: 6px;
   color: #e2e8f0;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .model-icon {
@@ -115,6 +117,8 @@ const iconClass = computed(() => {
 .model-name {
   font-weight: 500;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .font-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -125,6 +129,7 @@ const iconClass = computed(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .time-left {

@@ -35,6 +35,11 @@ const router = createRouter({
       name: 'accounts',
       component: () => import('../views/AccountsView.vue'),
     },
+    {
+      path: '/proxy',
+      name: 'proxy',
+      component: () => import('../views/ProxyView.vue'),
+    },
   ],
 });
 
