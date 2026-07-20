@@ -993,6 +993,12 @@ watch(activeConversationId, async (newId) => {
     activeConvLoading.value = true;
   }
 
+  // Close existing SSE connection if any
+  if (activeEventSource) {
+    activeEventSource.close();
+    activeEventSource = null;
+  }
+
   try {
     const res = await fetch(`/api/conversations/${newId}/steps`);
     if (res.ok) {
@@ -1023,6 +1029,37 @@ watch(activeConversationId, async (newId) => {
       activeConvLoading.value = false;
       scrollToBottom();
     }
+  }
+
+  // Open SSE connection for real-time updates
+  activeEventSource = new EventSource(`/api/conversations/${newId}/events`);
+  activeEventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      // Example of handling ProjectUpdatesStream frames.
+      // Usually it sends full step updates or state changes.
+      // Since it's complex, we can just trigger a reload of steps for now 
+      // or append if it's a new step. Let's trigger silent reload to ensure consistency.
+      if (data && !data.error) {
+        loadActiveConversationSteps(newId);
+      }
+    } catch (e) {
+      console.error('SSE Message error', e);
+    }
+  };
+  
+  activeEventSource.onerror = (err) => {
+    console.error('SSE Error', err);
+    // Don't close, let browser auto-reconnect
+  };
+});
+
+let activeEventSource: EventSource | null = null;
+import { onBeforeUnmount } from 'vue';
+
+onBeforeUnmount(() => {
+  if (activeEventSource) {
+    activeEventSource.close();
   }
 });
 
@@ -1120,23 +1157,11 @@ const handleSendChat = async () => {
   try {
     const res = await fetch(`/api/conversations/${activeConversationId.value}/chat`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, modelId: activeModelId.value })
     });
-
-    if (res.ok) {
-      await loadActiveConversationSteps(activeConversationId.value);
-      let pollCount = 0;
-      const interval = setInterval(async () => {
-        pollCount++;
-        await loadActiveConversationSteps(activeConversationId.value);
-        if (pollCount >= 5) {
-          clearInterval(interval);
-        }
-      }, 1500);
-    } else {
+    
+    if (!res.ok) {
       console.error('Failed to send prompt to backend');
     }
   } catch (err) {
@@ -1393,7 +1418,8 @@ onUnmounted(() => {
                     <div class="message-bubble assistant-message">
                       <div class="message-header">
                         <div class="header-left-meta">
-                          <span class="sender-name">Antigravity AI</span>
+                          <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
+                          <span class="sender-name">Antigravity</span>
                           <span class="step-badge" v-if="group.responseSteps.length > 0">
                             Step {{ group.responseSteps[0].stepIndex }}
                           </span>
@@ -1419,102 +1445,105 @@ onUnmounted(() => {
 
                         <div v-if="expandedProcessingGroups.has(gIdx)" class="worker-details-list">
                           <!-- Chronological workers action flow matching Gambar 1 -->
-                          <div v-for="(step, lidx) in [...group.processingSteps, ...group.responseSteps]" :key="lidx" class="worker-flow-step">
+                          <template v-for="(step, lidx) in [...group.processingSteps, ...group.responseSteps]" :key="lidx">
                             
                             <!-- 1. GREP SEARCH -->
-                            <div v-if="step.type === 'CORTEX_STEP_TYPE_GREP_SEARCH'" class="flow-item-wrapper">
-                              <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
-                                <span class="flow-action-text">Searched <span class="highlight-mono">{{ getSearchMeta(step).query }}</span></span>
-                                <span v-if="getSearchMeta(step).resultsCount" class="results-badge">{{ getSearchMeta(step).resultsCount }} results</span>
-                                <component 
-                                  :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
-                                  class="flow-row-chevron" 
-                                />
-                              </div>
-                              <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
-                                <pre class="sub-step-details-code"><code>{{ getSubStepDetails(step) }}</code></pre>
+                            <div v-if="step.type === 'CORTEX_STEP_TYPE_GREP_SEARCH'" class="worker-flow-step">
+                              <div class="flow-item-wrapper">
+                                <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                  <span class="flow-action-text">Searched <span class="highlight-mono">{{ getSearchMeta(step).query }}</span></span>
+                                  <span v-if="getSearchMeta(step).resultsCount" class="results-badge">{{ getSearchMeta(step).resultsCount }} results</span>
+                                  <component 
+                                    :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                    class="flow-row-chevron" 
+                                  />
+                                </div>
+                                <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                  <pre class="sub-step-details-code"><code>{{ getSubStepDetails(step) }}</code></pre>
+                                </div>
                               </div>
                             </div>
 
                             <!-- 2. VIEW FILE -->
-                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_VIEW_FILE'" class="flow-item-wrapper">
-                              <div class="flow-row-header" @click="openFileInSidebar(getViewFileMeta(step).path)">
-                                <span class="flow-action-text">
-                                  Analyzed 
-                                  <span class="file-link-accent">
-                                    <FileIcon class="inline-file-icon" />
-                                    {{ getViewFileMeta(step).name }}
+                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_VIEW_FILE'" class="worker-flow-step">
+                              <div class="flow-item-wrapper">
+                                <div class="flow-row-header" @click="openFileInSidebar(getViewFileMeta(step).path)">
+                                  <span class="flow-action-text">
+                                    Analyzed 
+                                    <span class="file-link-accent">
+                                      <FileIcon class="inline-file-icon" />
+                                      {{ getViewFileMeta(step).name }}
+                                    </span>
+                                    <span class="range-mono">{{ getViewFileMeta(step).range }}</span>
                                   </span>
-                                  <span class="range-mono">{{ getViewFileMeta(step).range }}</span>
-                                </span>
+                                </div>
                               </div>
                             </div>
 
                             <!-- 3. THOUGHT BLOCK / THINKING -->
-                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && step.plannerResponse?.thinking" class="flow-item-wrapper">
-                              <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
-                                <span class="flow-action-text">Thought for 1s</span>
-                                <component 
-                                  :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
-                                  class="flow-row-chevron" 
-                                />
-                              </div>
-                              <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
-                                <div class="nested-thinking-box">
-                                  <div class="thinking-title">Thinking Process</div>
-                                  <div class="thinking-content" v-html="renderMarkdown(step.plannerResponse.thinking)"></div>
+                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && step.plannerResponse?.thinking" class="worker-flow-step">
+                              <div class="flow-item-wrapper">
+                                <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                  <span class="flow-action-text">Thought for 1s</span>
+                                  <component 
+                                    :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                    class="flow-row-chevron" 
+                                  />
+                                </div>
+                                <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                  <div class="nested-thinking-box">
+                                    <div class="thinking-title">Thinking Process</div>
+                                    <div class="thinking-content" v-html="renderMarkdown(step.plannerResponse.thinking)"></div>
+                                  </div>
                                 </div>
                               </div>
                             </div>
 
                             <!-- 4. CODE MODIFICATIONS / EDITED -->
-                            <div v-else-if="(step.type === 'CORTEX_STEP_TYPE_CODE_ACKNOWLEDGEMENT' || step.codeAcknowledgement) && getFileChangeMeta(step).hasChange" class="flow-item-wrapper">
-                              <div class="flow-row-header" @click="openFileInSidebar(getFileChangeMeta(step).filePath)">
-                                <span class="flow-action-text">
-                                  Edited 
-                                  <span class="file-link-accent">
-                                    <FileIcon class="inline-file-icon" />
-                                    {{ getFileChangeMeta(step).fileName }}
+                            <div v-else-if="(step.type === 'CORTEX_STEP_TYPE_CODE_ACKNOWLEDGEMENT' || step.codeAcknowledgement) && getFileChangeMeta(step).hasChange" class="worker-flow-step">
+                              <div class="flow-item-wrapper">
+                                <div class="flow-row-header" @click="openFileInSidebar(getFileChangeMeta(step).filePath)">
+                                  <span class="flow-action-text">
+                                    Edited 
+                                    <span class="file-link-accent">
+                                      <FileIcon class="inline-file-icon" />
+                                      {{ getFileChangeMeta(step).fileName }}
+                                    </span>
+                                    <span class="worker-badge-lines">
+                                      <span class="badge-added">+{{ getFileChangeMeta(step).addedLines }}</span>
+                                      <span class="badge-deleted">-{{ getFileChangeMeta(step).deletedLines }}</span>
+                                    </span>
                                   </span>
-                                  <span class="worker-badge-lines">
-                                    <span class="badge-added">+{{ getFileChangeMeta(step).addedLines }}</span>
-                                    <span class="badge-deleted">-{{ getFileChangeMeta(step).deletedLines }}</span>
-                                  </span>
-                                </span>
+                                </div>
                               </div>
                             </div>
 
                             <!-- 5. RAN COMMAND -->
-                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_RUN_COMMAND' || step.runCommand" class="flow-item-wrapper">
-                              <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
-                                <span class="flow-action-text">Ran <span class="highlight-mono">{{ step.runCommand?.commandLine || JSON.parse(step.metadata?.argumentsJson || '{}').CommandLine }}</span></span>
-                                <component 
-                                  :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
-                                  class="flow-row-chevron" 
-                                />
-                              </div>
-                              <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
-                                <pre class="terminal-log-output"><code>{{ getCommandLogs(step) }}</code></pre>
+                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_RUN_COMMAND' || step.runCommand" class="worker-flow-step">
+                              <div class="flow-item-wrapper">
+                                <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                  <span class="flow-action-text">Ran <span class="highlight-mono">{{ step.runCommand?.commandLine || JSON.parse(step.metadata?.argumentsJson || '{}').CommandLine }}</span></span>
+                                  <component 
+                                    :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                    class="flow-row-chevron" 
+                                  />
+                                </div>
+                                <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                  <pre class="terminal-log-output"><code>{{ getCommandLogs(step) }}</code></pre>
+                                </div>
                               </div>
                             </div>
-
-                          </div>
+                          </template>
                         </div>
                       </div>
 
                       <!-- Loop and render all thinking processes and responses in chronological sequence inside this turn -->
                       <div class="consolidated-responses-flow">
-                        <div v-for="turnStep in group.responseSteps" :key="turnStep.stepIndex" class="response-turn-segment">
-                          
-                          <!-- Thinking Box if present -->
-                          <div v-if="turnStep.plannerResponse?.thinking" class="thinking-box">
-                            <div class="thinking-title">Thinking Process</div>
-                            <div class="thinking-content" v-html="renderMarkdown(turnStep.plannerResponse.thinking)"></div>
+                        <template v-for="turnStep in group.responseSteps" :key="turnStep.stepIndex">
+                          <div v-if="turnStep.plannerResponse?.response" class="response-turn-segment">
+                            <div class="message-content" v-html="renderMarkdown(turnStep.plannerResponse.response)"></div>
                           </div>
-
-                          <!-- Main Text Content Response -->
-                          <div v-if="turnStep.plannerResponse?.response" class="message-content" v-html="renderMarkdown(turnStep.plannerResponse.response)"></div>
-                        </div>
+                        </template>
                       </div>
 
                       <!-- Integrated File Change Review Bar at the bottom of the bubble -->
@@ -1552,8 +1581,27 @@ onUnmounted(() => {
 
               </div>
 
+              <!-- Typing Indicator when chat is sending -->
+              <div class="chat-step-group" v-if="chatSending">
+                <div class="chat-step">
+                  <div class="message-bubble assistant-message typing-bubble">
+                    <div class="message-header">
+                      <div class="header-left-meta">
+                        <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
+                        <span class="sender-name">Antigravity</span>
+                      </div>
+                    </div>
+                    <div class="typing-indicator">
+                      <span class="dot"></span>
+                      <span class="dot"></span>
+                      <span class="dot"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <!-- Fallback if empty steps -->
-              <div v-if="activeConvSteps.length === 0" class="empty-chat">
+              <div v-if="activeConvSteps.length === 0 && !chatSending" class="empty-chat">
                 <p>No steps found in this conversation yet.</p>
               </div>
             </div>
@@ -3001,30 +3049,57 @@ onUnmounted(() => {
 
 .message-bubble {
   max-width: 85%;
-  border-radius: var(--radius-md);
-  padding: 16px;
+  border-radius: var(--radius-lg);
+  padding: 14px 18px;
   line-height: 1.6;
-  font-size: 14px;
+  font-size: 14.5px;
   color: var(--text-primary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  position: relative;
 }
 
 .user-message {
   align-self: flex-end;
-  background: var(--color-primary);
+  background: linear-gradient(135deg, var(--color-primary), #4f46e5);
   color: #ffffff;
   border-bottom-right-radius: 4px;
 }
 
 .user-message .message-header .sender-name {
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(255, 255, 255, 0.95);
 }
 
 .assistant-message {
   align-self: flex-start;
-  background: #1e293b;
+  background: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-bottom-left-radius: 4px;
+}
+
+.ag-avatar-icon {
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.1);
+}
+
+/* Typing Indicator */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+.typing-indicator .dot {
+  width: 6px;
+  height: 6px;
+  background-color: var(--text-muted);
+  border-radius: 50%;
+  animation: typing 1.4s infinite ease-in-out both;
+}
+.typing-indicator .dot:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator .dot:nth-child(2) { animation-delay: -0.16s; }
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
 }
 
 .message-header {

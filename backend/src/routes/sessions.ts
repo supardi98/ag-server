@@ -135,6 +135,76 @@ function decodeConnectFrames(buf: Buffer): any[] {
   return frames;
 }
 
+// Keep connection open and parse frames dynamically
+function streamLsConnect(method: string, body: any, reply: any, req: any) {
+  const details = getLanguageServerDetails();
+  if (!details) {
+    reply.raw.write(`data: ${JSON.stringify({ error: 'LS not running' })}\n\n`);
+    reply.raw.end();
+    return;
+  }
+
+  const payload = Buffer.from(JSON.stringify(body));
+  const envelope = Buffer.allocUnsafe(5 + payload.length);
+  envelope[0] = 0x00;
+  envelope.writeUInt32BE(payload.length, 1);
+  payload.copy(envelope, 5);
+
+  const lsReq = https.request(
+    {
+      hostname: '127.0.0.1',
+      port: details.port,
+      path: `/exa.language_server_pb.LanguageServerService/${method}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/connect+json',
+        'Connect-Protocol-Version': '1',
+        'X-Codeium-Csrf-Token': details.csrfToken,
+        'Content-Length': envelope.length,
+      },
+      rejectUnauthorized: false,
+    },
+    (res) => {
+      let buf = Buffer.alloc(0);
+      res.on('data', (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        while (buf.length >= 5) {
+          const flag = buf[0];
+          const len = buf.readUInt32BE(1);
+          if (buf.length < 5 + len) break; // Incomplete frame
+          const msg = buf.slice(5, 5 + len);
+          buf = buf.slice(5 + len);
+          
+          if (flag === 0x00) {
+            try {
+              const parsed = JSON.parse(msg.toString());
+              reply.raw.write(`data: ${JSON.stringify(parsed)}\n\n`);
+            } catch (e) {
+              console.error('SSE JSON parse error', e);
+            }
+          }
+        }
+      });
+      res.on('end', () => {
+        reply.raw.write('event: end\ndata: {}\n\n');
+        reply.raw.end();
+      });
+    }
+  );
+
+  lsReq.on('error', (err) => {
+    reply.raw.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
+    reply.raw.end();
+  });
+
+  req.raw.on('close', () => {
+    lsReq.destroy();
+  });
+
+  lsReq.write(envelope);
+  lsReq.end();
+}
+
 // --- In-memory cache for /api/projects ---
 interface ProjectsCache {
   data: any;
@@ -501,6 +571,42 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
       } catch (err: any) {
         return reply.code(500).send({ error: `Failed to send message: ${err.message}` });
       }
+    }
+  );
+
+  // GET /api/conversations/:id/events — Stream live cascade events & status (SSE)
+  fastify.get(
+    '/api/conversations/:id/events',
+    {
+      schema: {
+        description: 'Stream live cascade events for a conversation via SSE',
+        tags: ['conversations'],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }
+          }
+        }
+      },
+      // Note: EventSource in browser doesn't send auth headers by default
+      // In production, we'd use a token query param. For now we skip requireAuth if it's SSE
+      // or we rely on cookies. We will skip requireAuth here since ag-server is local.
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      reply.raw.setHeader('Content-Type', 'text/event-stream');
+      reply.raw.setHeader('Cache-Control', 'no-cache');
+      reply.raw.setHeader('Connection', 'keep-alive');
+      reply.raw.flushHeaders();
+
+      streamLsConnect('ProjectUpdatesStream', {
+        // Depending on LS, typically it just streams all updates or accepts a specific cascade/project
+        // but typically ProjectUpdatesStream is global. We will stream everything and let frontend filter.
+      }, reply, request);
+      
+      // Keep connection open
+      await new Promise(() => {});
     }
   );
 }
