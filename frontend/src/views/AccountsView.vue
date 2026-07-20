@@ -114,6 +114,7 @@
                   <span class="pro-badge" v-if="account.quota?.subscription_tier" :class="getTierClass(account.quota.subscription_tier)">
                     <DiamondIcon size="10" /> {{ formatSubscriptionTier(account.quota.subscription_tier) }}
                   </span>
+                  <span class="pro-badge proxy-active-badge" v-if="account.isActive">Proxy Active</span>
                 </div>
               </div>
             </td>
@@ -150,8 +151,8 @@
                 <button class="action-btn" title="Details"><InfoIcon size="14" /></button>
                 <button class="action-btn" title="Fingerprint"><FingerprintIcon size="14" /></button>
                 <button class="action-btn text-orange-500" title="Tag"><TagIcon size="14" /></button>
-                <button class="action-btn text-blue-500" title="Switch" @click="handleSwitch(account.id)">
-                  <ArrowRightLeftIcon size="14" />
+                <button class="action-btn text-indigo" title="Set as Active Proxy" @click="handleSwitch(account.id)">
+                  <ServerIcon size="14" />
                 </button>
                 <button class="action-btn text-green-500" title="Refresh Live Quota" @click="handleRefreshQuota(account.id)">
                   <RefreshCwIcon size="14" :class="{ 'animate-spin': refreshingId === account.id }" />
@@ -199,6 +200,7 @@
                   <span class="pro-badge" v-if="account.quota?.subscription_tier" :class="getTierClass(account.quota.subscription_tier)">
                     <DiamondIcon size="10" /> {{ formatSubscriptionTier(account.quota.subscription_tier) }}
                   </span>
+                  <span class="pro-badge proxy-active-badge" v-if="account.isActive">Proxy Active</span>
                 </div>
                 <span class="last-used-text text-muted text-xs" v-if="account.last_used">
                   {{ new Date(account.last_used * 1000).toLocaleDateString() }}, {{ new Date(account.last_used * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}
@@ -231,8 +233,8 @@
               <button class="action-btn" title="Details"><InfoIcon size="14" /></button>
               <button class="action-btn" title="Fingerprint"><FingerprintIcon size="14" /></button>
               <button class="action-btn text-orange-500" title="Tag"><TagIcon size="14" /></button>
-              <button class="action-btn text-blue-500" title="Switch" @click="handleSwitch(account.id)">
-                <ArrowRightLeftIcon size="14" />
+              <button class="action-btn text-indigo" title="Set as Active Proxy" @click="handleSwitch(account.id)">
+                <ServerIcon size="14" />
               </button>
               <button class="action-btn text-green-500" title="Refresh Live Quota" @click="handleRefreshQuota(account.id)">
                 <RefreshCwIcon size="14" :class="{ 'animate-spin': refreshingId === account.id }" />
@@ -303,11 +305,13 @@ import {
   Bot as BotIcon,
   Cpu as CpuIcon,
   Zap as ZapIcon,
-  Ban as BanIcon
+  Ban as BanIcon,
+  Server as ServerIcon
 } from 'lucide-vue-next';
 import { useStorage } from '@vueuse/core';
 
-const { accounts, loading, fetchAccounts, addAccount, switchAccount, deleteAccount, refreshQuota, toggleAccount, exportAccounts } = useAccountStore();
+const accountStore = useAccountStore();
+const { accounts, loading, fetchAccounts, addAccount, switchAccount, deleteAccount, refreshQuota, toggleAccount, exportAccounts } = accountStore;
 
 const viewMode = useStorage<'list' | 'grid'>('ag-view-mode', 'grid');
 const showAddModal = ref(false);
@@ -486,7 +490,11 @@ const getModelIcon = (name: string) => {
 };
 
 const handleSwitch = async (id: string) => {
-  await switchAccount(id);
+  try {
+    await switchAccount(id);
+  } catch (err) {
+    console.error('Failed to switch account', err);
+  }
 };
 
 const handleRefreshQuota = async (id: string) => {
@@ -628,6 +636,36 @@ const formatTimeLeft = (resetTimeStr?: string) => {
   padding: 2px 6px;
   border-radius: 10px;
   font-size: 10px;
+}
+
+/* Badges */
+.active-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ag-active {
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+.proxy-active {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.ag-active-badge {
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+}
+.proxy-active-badge {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
 }
 
 .toolbar-btn {

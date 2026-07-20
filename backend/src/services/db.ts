@@ -38,12 +38,20 @@ db.exec(`
     email TEXT NOT NULL,
     refresh_token TEXT NOT NULL,
     is_active INTEGER DEFAULT 0,
+    is_proxy_active INTEGER DEFAULT 0,
     is_disabled INTEGER DEFAULT 0,
     last_used INTEGER,
     custom_label TEXT,
     quota_json TEXT
   );
 `);
+
+// Migration: add is_proxy_active if missing
+try {
+  db.exec('ALTER TABLE accounts ADD COLUMN is_proxy_active INTEGER DEFAULT 0');
+} catch (e) {
+  // Ignore error if column already exists
+}
 
 // Migration from JSON
 const accountsJsonPath = path.resolve(__dirname, '../../../data/accounts.json');
@@ -57,17 +65,18 @@ if (fs.existsSync(accountsJsonPath)) {
     if (countRow.count === 0 && Array.isArray(accounts)) {
       console.log('Migrating accounts from JSON to SQLite...');
       const insertAccount = db.prepare(`
-        INSERT INTO accounts (id, email, refresh_token, is_active, is_disabled, last_used, custom_label, quota_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO accounts (id, email, refresh_token, is_active, is_proxy_active, is_disabled, last_used, custom_label, quota_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       
-      const insertMany = db.transaction((accs) => {
+      const tx = db.transaction((accs: any[]) => {
         for (const acc of accs) {
           insertAccount.run(
             acc.id,
             acc.email,
             acc.refreshToken,
             acc.isActive ? 1 : 0,
+            0,
             acc.isDisabled ? 1 : 0,
             acc.last_used || null,
             acc.custom_label || null,
@@ -166,12 +175,13 @@ export const dbService = {
 
   upsertAccount(acc: any): void {
     db.prepare(`
-      INSERT INTO accounts (id, email, refresh_token, is_active, is_disabled, last_used, custom_label, quota_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO accounts (id, email, refresh_token, is_active, is_proxy_active, is_disabled, last_used, custom_label, quota_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         email = excluded.email,
         refresh_token = excluded.refresh_token,
         is_active = excluded.is_active,
+        is_proxy_active = excluded.is_proxy_active,
         is_disabled = excluded.is_disabled,
         last_used = excluded.last_used,
         custom_label = excluded.custom_label,
@@ -181,6 +191,7 @@ export const dbService = {
       acc.email,
       acc.refreshToken,
       acc.isActive ? 1 : 0,
+      0,
       acc.isDisabled ? 1 : 0,
       acc.last_used || null,
       acc.custom_label || null,

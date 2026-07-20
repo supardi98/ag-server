@@ -950,6 +950,7 @@ const handleChatScroll = async () => {
   }
 };
 
+
 onMounted(async () => {
   await Promise.all([fetchStatus(), fetchAgentStatus()]);
   await Promise.all([fetchSessions(), fetchProjects()]);
