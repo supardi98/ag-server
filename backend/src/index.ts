@@ -16,6 +16,7 @@ import { authRoutes } from './routes/auth.js';
 import { agentRoutes } from './routes/agent.js';
 import { settingsRoutes } from './routes/settings.js';
 import { sessionsRoutes, warmProjectsCache } from './routes/sessions.js';
+import { accountsRoutes } from './routes/accounts.js';
 import { registerSession } from './plugins/session.js';
 import { dbService } from './services/db.js';
 
@@ -54,6 +55,7 @@ await fastify.register(agentRoutes);
 await fastify.register(settingsRoutes);
 await fastify.register(sessionsRoutes);
 await fastify.register(statusRoutes);
+await fastify.register(accountsRoutes);
 
 if (isDev) {
   fastify.log.info('Development mode: mounting Vite as middleware (single port)');
