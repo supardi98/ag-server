@@ -1603,7 +1603,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Global Conversations Section -->
-        <div class="sidebar-section-header" style="margin-top: 1.5rem;">
+        <div class="sidebar-section-header" style="margin-top: 1rem;">
           <span class="sidebar-section-title">Conversations</span>
           <div class="sidebar-header-actions">
             <button
@@ -2389,7 +2389,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 4px;
   padding: 0 8px;
 }
 
@@ -2674,7 +2674,7 @@ onUnmounted(() => {
 
 .global-conversation-list {
   padding-left: 0;
-  margin-top: 6px;
+  margin-top: 2px;
 }
 
 .conv-empty {
