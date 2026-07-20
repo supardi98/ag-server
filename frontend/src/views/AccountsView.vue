@@ -7,7 +7,7 @@
           <SearchIcon size="16" class="text-muted" />
           <input type="text" v-model="searchQuery" placeholder="Search email..." class="search-input" />
         </div>
-        <div class="view-toggles">
+        <div class="view-toggles" v-if="width > 768">
           <button class="icon-btn" :class="{ active: viewMode === 'list' }" @click="viewMode = 'list'"><ListIcon size="16" /></button>
           <button class="icon-btn" :class="{ active: viewMode === 'grid' }" @click="viewMode = 'grid'"><GridIcon size="16" /></button>
         </div>
@@ -75,7 +75,7 @@
     </header>
 
     <!-- Table Content -->
-    <div class="table-container" v-if="viewMode === 'list'">
+    <div class="table-container" v-if="effectiveViewMode === 'list'">
       <table class="accounts-table">
         <thead>
           <tr>
@@ -176,8 +176,8 @@
       </table>
     </div>
 
-    <!-- Cards Content -->
-    <div class="cards-container" v-else-if="viewMode === 'grid'">
+    <!-- Grid Content -->
+    <div class="cards-container" v-else-if="effectiveViewMode === 'grid'">
       <div v-if="!loading && filteredAccounts.length === 0" class="empty-state">
         <UsersIcon size="48" class="text-muted opacity-50" />
         <p>No accounts found matching your filters.</p>
@@ -314,12 +314,14 @@ import {
   Ban as BanIcon,
   Server as ServerIcon
 } from 'lucide-vue-next';
-import { useStorage } from '@vueuse/core';
+import { useStorage, useWindowSize } from '@vueuse/core';
 
 const accountStore = useAccountStore();
 const { accounts, loading, fetchAccounts, addAccount, switchAccount, deleteAccount, refreshQuota, toggleAccount, exportAccounts, injectToIde } = accountStore;
 
 const viewMode = useStorage<'list' | 'grid'>('ag-view-mode', 'grid');
+const { width } = useWindowSize();
+const effectiveViewMode = computed(() => width.value <= 768 ? 'grid' : viewMode.value);
 const showAddModal = ref(false);
 const newEmail = ref('');
 const newRefreshToken = ref('');
@@ -1035,5 +1037,42 @@ const formatTimeLeft = (resetTimeStr?: string) => {
 }
 .account-row.is-disabled .email-text {
   text-decoration: line-through;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+    gap: 12px;
+  }
+  .toolbar-left, .toolbar-right {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .search-box {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+  .filters {
+    overflow-x: auto;
+    width: 100%;
+  }
+  .filters::-webkit-scrollbar {
+    display: none;
+  }
+  .toolbar-right {
+    overflow-x: auto;
+    width: 100%;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+  }
+  .toolbar-right::-webkit-scrollbar {
+    display: none;
+  }
+  .btn-batch, .toolbar-btn {
+    flex-shrink: 0;
+  }
 }
 </style>

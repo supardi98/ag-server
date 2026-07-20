@@ -4,7 +4,10 @@
     <section class="system-status-bar" v-if="!isLoginPage">
       <!-- Global Antigravity Toggle inside Status Bar -->
       <div class="status-bar-item agent-toggle-wrapper">
-        <span class="status-label">Antigravity Process:</span>
+        <span class="status-label">
+          <span class="hide-mobile">Antigravity Process:</span>
+          <span class="show-mobile">AG:</span>
+        </span>
         <AgToggle
           size="sm"
           :model-value="isRunning"
@@ -17,13 +20,19 @@
       </div>
 
       <div class="status-bar-item">
-        <span class="status-label">CDP (Chrome Debugging):</span>
+        <span class="status-label">
+          <span class="hide-mobile">CDP (Chrome Debugging):</span>
+          <span class="show-mobile">CDP:</span>
+        </span>
         <span :class="['status-badge', status?.cdpConnected ? 'badge--success' : 'badge--danger']">
           {{ status?.cdpConnected ? 'Connected' : 'Disconnected' }}
         </span>
       </div>
       <div class="status-bar-item">
-        <span class="status-label">Language Server:</span>
+        <span class="status-label">
+          <span class="hide-mobile">Language Server:</span>
+          <span class="show-mobile">LS:</span>
+        </span>
         <span :class="['status-badge', status?.lsConnected ? 'badge--success' : 'badge--danger']">
           {{ status?.lsConnected ? 'Connected' : 'Disconnected' }}
         </span>
@@ -386,5 +395,53 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+}
+
+.show-mobile {
+  display: none;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .system-status-bar {
+    padding: 8px 12px;
+    gap: 12px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  
+  .system-status-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-header {
+    padding: 0 12px;
+  }
+
+  .brand-title {
+    display: none;
+  }
+
+  .nav-tabs {
+    overflow-x: auto;
+  }
+
+  .nav-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tab-item {
+    padding: 0 12px;
+  }
+
+  .hide-mobile,
+  .tab-label,
+  .refresh-label {
+    display: none;
+  }
+
+  .show-mobile {
+    display: inline;
+  }
 }
 </style>
