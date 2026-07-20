@@ -23,6 +23,8 @@ import AgCard from '../components/AgCard.vue';
 import AgModal from '../components/AgModal.vue';
 import AgSpinner from '../components/AgSpinner.vue';
 import AgToggle from '../components/AgToggle.vue';
+import ProjectSidebar from '../components/layout/ProjectSidebar.vue';
+import FilePreviewSidebar from '../components/layout/FilePreviewSidebar.vue';
 import { authService } from '../services/auth';
 import { agentService } from '../services/agent';
 import { sessionsService, type Session } from '../services/sessions';
@@ -1440,129 +1442,24 @@ onUnmounted(() => {
 <template>
   <div class="antigravity-view">
     <!-- Sidebar for conversations/sessions -->
-    <aside class="sessions-sidebar">
-      <div class="sidebar-top-actions">
-        <AgButton
-          variant="primary"
-          class="w-full new-conv-btn"
-          :disabled="!status?.cdpConnected"
-          @click="activeConversationId = null; router.push('/')"
-        >
-          <PlusIcon class="btn-icon-svg" /> New Conversation
-        </AgButton>
-      </div>
-
-      <div class="sidebar-section-header">
-        <span class="sidebar-section-title">Projects</span>
-        <div class="sidebar-header-actions">
-          <button
-            class="refresh-projects-btn"
-            :disabled="projectsRefreshing"
-            @click="handleRefreshProjects"
-            title="Refresh projects"
-          >
-            <RefreshCwIcon class="refresh-projects-icon" :class="{ 'spin': projectsRefreshing }" />
-          </button>
-
-          <!-- Sort dropdown -->
-          <div class="sort-dropdown-wrapper">
-            <button
-              class="refresh-projects-btn"
-              :class="{ 'sort-btn--active': sortKey !== 'last-updated' }"
-              @click.stop="showSortMenu = !showSortMenu"
-              title="Sort conversations"
-            >
-              <SortIcon class="refresh-projects-icon" />
-            </button>
-            <div v-if="showSortMenu" class="sort-menu">
-              <div class="sort-menu-group">Sort Conversations</div>
-              <button
-                v-for="opt in sortOptions"
-                :key="opt.key"
-                class="sort-menu-item"
-                :class="{ 'sort-menu-item--active': sortKey === opt.key }"
-                @click="setSortKey(opt.key)"
-              >
-                <CheckIcon v-if="sortKey === opt.key" class="sort-check-icon" />
-                <span v-else class="sort-check-spacer"></span>
-                {{ opt.label }}
-              </button>
-            </div>
-          </div>
-
-          <!-- New Folder Plus icon button to open Connect Workspace modal -->
-          <button
-            class="refresh-projects-btn"
-            @click="showConnectModal = true"
-            title="Connect local workspace folder"
-          >
-            <FolderPlusIcon class="refresh-projects-icon" />
-          </button>
-        </div>
-      </div>
-      <div v-if="projectsRefreshing" class="sidebar-refreshing">Refreshing...</div>
-
-      <div v-if="projectsLoading" class="sidebar-empty">Loading projects...</div>
-      <div v-else-if="projects.length === 0" class="sidebar-empty">No projects found</div>
-
-      <div v-else class="project-tree">
-        <div
-          v-for="project in sortedProjects"
-          :key="project.folderUri"
-          class="project-group"
-        >
-          <!-- Project folder header -->
-          <div class="project-group-header">
-            <button
-              class="project-folder-btn"
-              @click="toggleProjectFolder(project.folderUri)"
-            >
-              <ChevronRightIcon
-                class="chevron-icon"
-                :class="{ 'chevron-open': expandedProjects.has(project.folderUri) }"
-              />
-              <component
-                :is="expandedProjects.has(project.folderUri) ? FolderOpenIcon : FolderIcon"
-                class="folder-icon"
-              />
-              <span class="project-name">{{ project.name }}</span>
-            </button>
-            <button
-              class="add-conv-btn"
-              :title="`New conversation in ${project.name}`"
-              @click.stop="selectProjectFromSidebar(project)"
-            >
-              <PlusIcon class="add-conv-icon" />
-            </button>
-            <span class="conv-count">{{ project.conversations.length }}</span>
-          </div>
-
-          <!-- Conversations inside project -->
-          <div
-            v-if="expandedProjects.has(project.folderUri)"
-            class="conversation-list"
-          >
-            <div v-if="project.conversations.length === 0" class="conv-empty">
-              No conversations
-            </div>
-            <button
-              v-for="conv in project.conversations"
-              :key="conv.id"
-              class="conv-item"
-              :class="{ 'conv-item--active': activeConversationId === conv.id }"
-              @click="activeConversationId = conv.id"
-            >
-              <ConversationIcon class="conv-icon" />
-              <span class="conv-title">
-                {{ conv.title }}
-                <span v-if="isConversationRunning(conv.id)" class="conv-running-pulse" title="Running active cascade..." />
-              </span>
-              <span class="conv-time">{{ formatRelativeTime(conv.lastModifiedTime) }}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </aside>
+    <ProjectSidebar
+      :status="status"
+      :activeConversationId="activeConversationId"
+      :projectsRefreshing="projectsRefreshing"
+      :projectsLoading="projectsLoading"
+      :projects="projects"
+      :sortedProjects="sortedProjects"
+      :sortKey="sortKey"
+      :sortOptions="sortOptions"
+      :expandedProjects="expandedProjects"
+      :isConversationRunning="isConversationRunning"
+      @update:activeConversationId="val => activeConversationId = val"
+      @refresh-projects="handleRefreshProjects"
+      @set-sort-key="setSortKey"
+      @show-connect-modal="showConnectModal = true"
+      @toggle-project-folder="toggleProjectFolder"
+      @select-project="selectProjectFromSidebar"
+    />
 
     <!-- Main Workspace Content -->
     <div class="workspace-area">
@@ -2031,55 +1928,16 @@ onUnmounted(() => {
           </div>
 
           <!-- Right Sidebar File / Diff Viewer (Slide-out panel) -->
-          <aside v-if="showRightSidebar" class="right-file-sidebar">
-            <div class="sidebar-file-header">
-              <div class="file-header-info">
-                <h4>{{ sidebarFileName }}</h4>
-                <span class="file-path-sub">{{ sidebarFilePath }}</span>
-              </div>
-              <button class="close-sidebar-btn" @click="showRightSidebar = false">
-                <XIcon class="close-icon-svg" />
-              </button>
-            </div>
-            
-            <div class="sidebar-file-body">
-              <div v-if="sidebarFileLoading" class="file-loading-state">
-                <AgSpinner size="md" />
-                <p>Reading file...</p>
-              </div>
-
-              <!-- Inline Diff rendering mode -->
-              <div v-else-if="activeDiffMode" class="diff-viewer-container">
-                <div v-for="(block, idx) in activeDiffChunks" :key="idx" class="diff-block-wrapper">
-                  
-                  <!-- Folded block -->
-                  <div v-if="block.type === 'folded'" class="diff-folded-divider">
-                    <span class="folded-line-nums">
-                      <span>{{ block.leftLineNum }}</span>
-                      <span>{{ block.rightLineNum }}</span>
-                    </span>
-                    <div class="folded-pill-text">+{{ block.foldedCount }} more lines</div>
-                  </div>
-
-                  <!-- Code changes block wrapper with single horizontal scrollbar -->
-                  <div v-else class="diff-code-scroll-container">
-                    <div class="diff-left-num-gutter">
-                      <div v-for="(line, lidx) in block.lines" :key="lidx" class="diff-gutter-row" :class="`diff-gutter-row--${line.type}`">
-                        <span class="line-num-col">{{ line.leftLineNum || '' }}</span>
-                        <span class="line-num-col">{{ line.rightLineNum || '' }}</span>
-                      </div>
-                    </div>
-                    
-                    <pre class="diff-code-scroll-area"><code><div v-for="(line, cidx) in block.lines" :key="cidx" class="diff-code-line-row" :class="`diff-code-line-row--${line.type}`">{{ line.content || ' ' }}</div></code></pre>
-                  </div>
-
-                </div>
-              </div>
-
-              <!-- Full File rendering mode -->
-              <pre v-else class="file-code-block"><code>{{ sidebarFileContent }}</code></pre>
-            </div>
-          </aside>
+          <FilePreviewSidebar
+            v-if="showRightSidebar"
+            :sidebarFileName="sidebarFileName"
+            :sidebarFilePath="sidebarFilePath"
+            :sidebarFileLoading="sidebarFileLoading"
+            :activeDiffMode="activeDiffMode"
+            :activeDiffChunks="activeDiffChunks"
+            :sidebarFileContent="sidebarFileContent"
+            @close="showRightSidebar = false"
+          />
         </div>
 
         <!-- Empty Workspace / Onboarding view (Shows when no activeConversationId) -->
