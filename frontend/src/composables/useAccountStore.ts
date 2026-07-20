@@ -124,6 +124,24 @@ export function useAccountStore() {
     }
   };
 
+  const injectToIde = async (accountId: string) => {
+    loading.value = true;
+    error.value = null;
+    try {
+      const res = await fetch('/api/accounts/inject-ide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId }),
+      });
+      if (!res.ok) throw new Error('Failed to inject account to IDE');
+    } catch (err: any) {
+      error.value = err.message;
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  };
+
   const exportAccounts = async (ids?: string[]) => {
     try {
       const res = await fetch('/api/accounts/export', {
@@ -168,6 +186,7 @@ export function useAccountStore() {
     deleteAccount,
     refreshQuota,
     toggleAccount,
+    injectToIde,
     exportAccounts,
   };
 }

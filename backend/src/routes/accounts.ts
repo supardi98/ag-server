@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { getAccessTokenFromRefresh } from '../services/oauth.js';
 import { fetchLiveQuota } from '../services/quota.js';
 import { dbService } from '../services/db.js';
+import { execSync } from 'child_process';
 
 export interface Account {
   id: string;
@@ -295,6 +296,73 @@ export async function accountsRoutes(fastify: FastifyInstance) {
       
       dbService.updateAccountStatus(id, { isDisabled: disabled });
       return { ok: true, isDisabled: disabled };
+    }
+  );
+
+  // POST /api/accounts/inject-ide
+  fastify.post(
+    '/api/accounts/inject-ide',
+    {
+      schema: {
+        description: 'Inject the account token into the IDE OS keyring and restart language_server',
+        tags: ['accounts'],
+        body: {
+          type: 'object',
+          required: ['accountId'],
+          properties: {
+            accountId: { type: 'string' }
+          }
+        }
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const { accountId } = request.body as { accountId: string };
+      
+      const account = dbService.getAccount(accountId);
+      if (!account) {
+        return reply.code(404).send({ error: 'Account not found' });
+      }
+
+      try {
+        const { access_token, expires_in } = await getAccessTokenFromRefresh(account.refreshToken);
+        
+        if (!access_token) {
+          return reply.code(400).send({ error: 'Failed to obtain access token from Google' });
+        }
+
+        // Build Keyring payload
+        const expiryDate = new Date(Date.now() + (expires_in || 3600) * 1000);
+        const payload = {
+          token: {
+            access_token: access_token,
+            token_type: "Bearer",
+            refresh_token: account.refreshToken,
+            expiry: expiryDate.toISOString(),
+          },
+          auth_method: "consumer"
+        };
+
+        const payloadStr = JSON.stringify(payload);
+
+        // Run secret-tool to inject into keyring
+        execSync(
+          'secret-tool store --label=gemini service gemini username antigravity',
+          { input: payloadStr, stdio: ['pipe', 'ignore', 'pipe'] }
+        );
+
+        // Kill language_server to force IDE to pick up the new token
+        try {
+          execSync('pkill -f "language_server"');
+        } catch (e) {
+          // pkill exits with 1 if no process found, which is fine
+        }
+
+        return { ok: true, message: `Account ${account.email} injected to IDE` };
+      } catch (err: any) {
+        request.log.error('Failed to inject IDE token:', err);
+        return reply.code(500).send({ error: err.message || 'Injection failed' });
+      }
     }
   );
 }

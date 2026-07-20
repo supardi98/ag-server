@@ -151,6 +151,9 @@
                 <button class="action-btn" title="Details"><InfoIcon size="14" /></button>
                 <button class="action-btn" title="Fingerprint"><FingerprintIcon size="14" /></button>
                 <button class="action-btn text-orange-500" title="Tag"><TagIcon size="14" /></button>
+                <button class="action-btn text-blue-500" title="Inject to Antigravity IDE" @click="handleInjectIde(account.id)">
+                  <SparklesIcon size="14" />
+                </button>
                 <button class="action-btn text-indigo" title="Set as Active Proxy" @click="handleSwitch(account.id)">
                   <ServerIcon size="14" />
                 </button>
@@ -233,6 +236,9 @@
               <button class="action-btn" title="Details"><InfoIcon size="14" /></button>
               <button class="action-btn" title="Fingerprint"><FingerprintIcon size="14" /></button>
               <button class="action-btn text-orange-500" title="Tag"><TagIcon size="14" /></button>
+              <button class="action-btn text-blue-500" title="Inject to Antigravity IDE" @click="handleInjectIde(account.id)">
+                <SparklesIcon size="14" />
+              </button>
               <button class="action-btn text-indigo" title="Set as Active Proxy" @click="handleSwitch(account.id)">
                 <ServerIcon size="14" />
               </button>
@@ -311,7 +317,7 @@ import {
 import { useStorage } from '@vueuse/core';
 
 const accountStore = useAccountStore();
-const { accounts, loading, fetchAccounts, addAccount, switchAccount, deleteAccount, refreshQuota, toggleAccount, exportAccounts } = accountStore;
+const { accounts, loading, fetchAccounts, addAccount, switchAccount, deleteAccount, refreshQuota, toggleAccount, exportAccounts, injectToIde } = accountStore;
 
 const viewMode = useStorage<'list' | 'grid'>('ag-view-mode', 'grid');
 const showAddModal = ref(false);
@@ -494,6 +500,14 @@ const handleSwitch = async (id: string) => {
     await switchAccount(id);
   } catch (err) {
     console.error('Failed to switch account', err);
+  }
+};
+
+const handleInjectIde = async (id: string) => {
+  try {
+    await injectToIde(id);
+  } catch (err) {
+    console.error('Failed to inject IDE', err);
   }
 };
 
