@@ -5,17 +5,25 @@
       <div class="toolbar-left">
         <div class="search-box">
           <SearchIcon size="16" class="text-muted" />
-          <input type="text" placeholder="Search email..." class="search-input" />
+          <input type="text" v-model="searchQuery" placeholder="Search email..." class="search-input" />
         </div>
         <div class="view-toggles">
           <button class="icon-btn active"><ListIcon size="16" /></button>
           <button class="icon-btn"><GridIcon size="16" /></button>
         </div>
         <div class="filters">
-          <button class="filter-badge active">All <span class="count">{{ accounts.length }}</span></button>
-          <button class="filter-badge text-indigo">PRO <span class="count">3</span></button>
-          <button class="filter-badge text-purple">ULTRA <span class="count">0</span></button>
-          <button class="filter-badge text-gray">FREE <span class="count">{{ Math.max(0, accounts.length - 3) }}</span></button>
+          <button class="filter-badge" :class="{ active: activeFilter === 'ALL' }" @click="activeFilter = 'ALL'">
+            All <span class="count">{{ accounts.length }}</span>
+          </button>
+          <button class="filter-badge text-indigo" :class="{ active: activeFilter === 'PRO' }" @click="activeFilter = 'PRO'">
+            PRO <span class="count">{{ counts.pro }}</span>
+          </button>
+          <button class="filter-badge text-purple" :class="{ active: activeFilter === 'ULTRA' }" @click="activeFilter = 'ULTRA'">
+            ULTRA <span class="count">{{ counts.ultra }}</span>
+          </button>
+          <button class="filter-badge text-gray" :class="{ active: activeFilter === 'FREE' }" @click="activeFilter = 'FREE'">
+            FREE <span class="count">{{ counts.free }}</span>
+          </button>
         </div>
       </div>
       
@@ -23,23 +31,44 @@
         <button class="toolbar-btn icon-only" @click="showAddModal = true" title="Add Account">
           <PlusIcon size="16" />
         </button>
-        <button class="toolbar-btn text-blue" @click="fetchAccounts">
-          <RefreshCwIcon size="14" :class="{ 'animate-spin': loading }" /> Refresh All
-        </button>
-        <button class="toolbar-btn bg-orange text-white">
-          <SparklesIcon size="14" /> One-click Warmup
-        </button>
-        <div class="toggle-group">
+        <template v-if="selectedAccountIds.length > 0">
+          <button class="btn-batch btn-batch-delete" @click="handleBatchDelete">
+            <Trash2Icon size="16" /> Delete ({{ selectedAccountIds.length }})
+          </button>
+          <button class="btn-batch btn-batch-disable" @click="handleBatchDisable">
+            <ToggleLeftIcon size="16" /> Disable ({{ selectedAccountIds.length }})
+          </button>
+          <button class="btn-batch btn-batch-enable" @click="handleBatchEnable">
+            <ToggleLeftIcon size="16" /> Enable ({{ selectedAccountIds.length }})
+          </button>
+          <button class="btn-batch btn-batch-refresh" @click="handleBatchRefresh">
+            <RefreshCwIcon size="16" /> Refresh ({{ selectedAccountIds.length }})
+          </button>
+          <button class="btn-batch btn-batch-warmup" @click="handleBatchWarmup">
+            <SparklesIcon size="16" /> Warmup ({{ selectedAccountIds.length }})
+          </button>
+        </template>
+        <template v-else>
+          <button class="toolbar-btn text-blue" @click="handleRefreshAll">
+            <RefreshCwIcon size="14" :class="{ 'animate-spin': loading }" /> Refresh All
+          </button>
+          <button class="toolbar-btn bg-orange text-white">
+            <SparklesIcon size="14" /> One-click Warmup
+          </button>
+        </template>
+        <div class="toggle-group" v-if="selectedAccountIds.length === 0">
           <span class="text-xs text-muted">Show All Quotas</span>
           <AgToggle :model-value="false" size="sm" />
         </div>
         <div class="divider"></div>
-        <button class="toolbar-btn ghost" @click="fileInputRef?.click()">
-          <UploadIcon size="14" /> Import
-        </button>
-        <button class="toolbar-btn ghost">
-          <DownloadIcon size="14" /> Export
-        </button>
+        <div style="display: flex; gap: 4px;">
+          <button class="toolbar-btn ghost" @click="fileInputRef?.click()">
+            <UploadIcon size="14" /> Import
+          </button>
+          <button class="toolbar-btn ghost">
+            <DownloadIcon size="14" /> Export
+          </button>
+        </div>
         <input 
           type="file" 
           ref="fileInputRef" 
@@ -55,7 +84,7 @@
       <table class="accounts-table">
         <thead>
           <tr>
-            <th class="col-checkbox"><input type="checkbox" class="ag-checkbox" /></th>
+            <th class="col-checkbox"><input type="checkbox" class="ag-checkbox" v-model="selectAll" /></th>
             <th class="col-email">EMAIL</th>
             <th class="col-quota">MODEL QUOTA</th>
             <th class="col-last-used">LAST USED</th>
@@ -64,49 +93,60 @@
         </thead>
         <tbody>
           <!-- Empty State -->
-          <tr v-if="!loading && accounts.length === 0">
+          <tr v-if="!loading && filteredAccounts.length === 0">
             <td colspan="5">
               <div class="empty-state">
                 <UsersIcon size="48" class="text-muted opacity-50" />
-                <p>No accounts found. Import or add one.</p>
+                <p>No accounts found matching your filters.</p>
               </div>
             </td>
           </tr>
 
           <!-- Account Rows -->
-          <tr v-for="account in accounts" :key="account.id" class="account-row" :class="{ 'is-current': account.isActive }">
+          <tr v-for="account in filteredAccounts" :key="account.id" class="account-row" :class="{ 'is-current': account.isActive, 'is-disabled': account.isDisabled }">
             <td class="col-checkbox">
-              <input type="checkbox" class="ag-checkbox" />
+              <input type="checkbox" class="ag-checkbox" :value="account.id" v-model="selectedAccountIds" />
             </td>
             
             <td class="col-email">
               <div class="email-cell">
                 <GripVerticalIcon size="14" class="drag-handle text-muted" />
                 <div class="email-content">
-                  <span class="email-text">{{ account.email }}</span>
-                  <span class="pro-badge"><DiamondIcon size="10" /> PRO</span>
+                  <span class="email-text" :class="{ 'opacity-50 line-through': account.isDisabled }">{{ account.email }}</span>
+                  <span class="pro-badge tier-disabled" v-if="account.isDisabled">
+                    <BanIcon size="10" /> Disabled
+                  </span>
+                  <span class="pro-badge" v-if="account.quota?.subscription_tier" :class="getTierClass(account.quota.subscription_tier)">
+                    <DiamondIcon size="10" /> {{ formatSubscriptionTier(account.quota.subscription_tier) }}
+                  </span>
                 </div>
               </div>
             </td>
 
             <td class="col-quota">
-              <div class="quota-grid">
-                <!-- Mocking Quotas to match screenshot perfectly -->
-                <QuotaItem name="gpt-oss-120b-medium" :icon="BotIcon" time-left="0h 39m" :percentage="0" />
-                <QuotaItem name="gemini-pro-agent" :icon="BotIcon" time-left="20h 12m" :percentage="0" />
-                <QuotaItem name="3.1 Pro High" :icon="SparklesIcon" time-left="20h 12m" :percentage="0" />
-                <QuotaItem name="Image Generation (1:1)" :icon="SparklesIcon" time-left="N/A" :percentage="0" />
-                <QuotaItem name="3.1 Pro Low" :icon="SparklesIcon" time-left="20h 12m" :percentage="0" />
-                <QuotaItem name="Flash Preview (Flash 3)" :icon="SparklesIcon" time-left="20h 12m" :percentage="0" />
-                <QuotaItem name="gemini-3-flash-agent" :icon="BotIcon" time-left="20h 12m" :percentage="0" />
-                <QuotaItem name="gemini-3.1-flash-lite" :icon="BotIcon" time-left="20h 12m" :percentage="0" />
+              <div class="quota-grid" v-if="account.quota?.models?.length > 0">
+                  <QuotaItem 
+                  v-for="model in account.quota.models" 
+                  :key="model.name"
+                  :id="model.id"
+                  :name="model.name" 
+                  :icon="getModelIcon(model.name)" 
+                  :time-left="formatTimeLeft(model.reset_time)" 
+                  :percentage="model.percentage" 
+                />
+              </div>
+              <div v-else class="text-muted text-xs opacity-50 p-2">
+                No quota data available. Please click the green Refresh button in Actions.
               </div>
             </td>
 
             <td class="col-last-used">
-              <div class="last-used-cell">
-                <span class="date">7/19/2026</span>
-                <span class="time">06:46 PM</span>
+              <div class="last-used-cell" v-if="account.last_used">
+                <span class="date">{{ new Date(account.last_used * 1000).toLocaleDateString() }}</span>
+                <span class="time">{{ new Date(account.last_used * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
+              </div>
+              <div class="last-used-cell" v-else>
+                <span class="date text-muted">Never</span>
               </div>
             </td>
 
@@ -118,10 +158,14 @@
                 <button class="action-btn text-blue-500" title="Switch" @click="handleSwitch(account.id)">
                   <ArrowRightLeftIcon size="14" />
                 </button>
-                <button class="action-btn text-green-500" title="Refresh"><RefreshCwIcon size="14" /></button>
+                <button class="action-btn text-green-500" title="Refresh Live Quota" @click="handleRefreshQuota(account.id)">
+                  <RefreshCwIcon size="14" :class="{ 'animate-spin': refreshingId === account.id }" />
+                </button>
                 <button class="action-btn" title="Export"><DownloadIcon size="14" /></button>
-                <button class="action-btn text-orange-500" title="Toggle Proxy"><ToggleLeftIcon size="14" /></button>
-                <button class="action-btn text-red-500 hover-bg-red" title="Delete" @click="deleteAccount(account.id)">
+                <button class="action-btn text-orange-500" title="Toggle Disable" @click="toggleAccount(account.id, !account.isDisabled)">
+                  <ToggleLeftIcon size="14" />
+                </button>
+                <button class="action-btn text-red-500 hover-bg-red" title="Delete" @click="handleDeleteSingle(account)">
                   <Trash2Icon size="14" />
                 </button>
               </div>
@@ -154,28 +198,122 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useAccountStore } from '../composables/useAccountStore';
 import QuotaItem from '../components/QuotaItem.vue';
 import AgToggle from '../components/AgToggle.vue';
 import AgModal from '../components/AgModal.vue';
 import AgButton from '../components/AgButton.vue';
 import { 
-  Search as SearchIcon, List as ListIcon, Grid as GridIcon, Plus as PlusIcon, 
-  RefreshCw as RefreshCwIcon, Sparkles as SparklesIcon, Upload as UploadIcon, 
-  Download as DownloadIcon, Users as UsersIcon, GripVertical as GripVerticalIcon,
-  Info as InfoIcon, Fingerprint as FingerprintIcon, Tag as TagIcon, 
-  ArrowRightLeft as ArrowRightLeftIcon, ToggleLeft as ToggleLeftIcon, Trash2 as Trash2Icon,
-  Bot as BotIcon, Diamond as DiamondIcon
+  Plus as PlusIcon, 
+  Trash2 as Trash2Icon, 
+  RefreshCw as RefreshCwIcon,
+  ToggleLeft as ToggleLeftIcon,
+  ToggleRight as ToggleRightIcon,
+  Info as InfoIcon,
+  Fingerprint as FingerprintIcon,
+  Download as DownloadIcon,
+  Upload as UploadIcon,
+  ArrowRightLeft as ArrowRightLeftIcon,
+  Sparkles as SparklesIcon,
+  Tag as TagIcon,
+  Search as SearchIcon,
+  List as ListIcon,
+  Grid as GridIcon,
+  Users as UsersIcon,
+  GripVertical as GripVerticalIcon,
+  Diamond as DiamondIcon,
+  Bot as BotIcon,
+  Cpu as CpuIcon,
+  Zap as ZapIcon,
+  Ban as BanIcon
 } from 'lucide-vue-next';
 
-const { accounts, loading, fetchAccounts, addAccount, switchAccount, deleteAccount } = useAccountStore();
+const { accounts, loading, fetchAccounts, addAccount, switchAccount, deleteAccount, refreshQuota, toggleAccount } = useAccountStore();
 
 const showAddModal = ref(false);
 const newEmail = ref('');
 const newRefreshToken = ref('');
 const isSubmitting = ref(false);
+const refreshingId = ref<string | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+
+const selectedAccountIds = ref<string[]>([]);
+const searchQuery = ref('');
+const activeFilter = ref('ALL');
+
+const counts = computed(() => {
+  let pro = 0, ultra = 0, free = 0;
+  for (const acc of accounts.value) {
+    const tier = formatSubscriptionTier(acc.quota?.subscription_tier);
+    if (tier === 'ULTRA') ultra++;
+    else if (tier === 'PRO') pro++;
+    else free++;
+  }
+  return { pro, ultra, free };
+});
+
+const filteredAccounts = computed(() => {
+  let list = accounts.value;
+  
+  if (activeFilter.value !== 'ALL') {
+    list = list.filter(a => formatSubscriptionTier(a.quota?.subscription_tier) === activeFilter.value);
+  }
+  
+  if (searchQuery.value) {
+    const q = searchQuery.value.toLowerCase();
+    list = list.filter(a => a.email.toLowerCase().includes(q));
+  }
+  
+  return list;
+});
+
+const selectAll = computed({
+  get: () => filteredAccounts.value.length > 0 && selectedAccountIds.value.length === filteredAccounts.value.length,
+  set: (val) => {
+    if (val) {
+      selectedAccountIds.value = filteredAccounts.value.map(a => a.id);
+    } else {
+      selectedAccountIds.value = [];
+    }
+  }
+});
+
+const handleBatchDelete = async () => {
+  if (!confirm(`Are you sure you want to delete ${selectedAccountIds.value.length} accounts?`)) return;
+  for (const id of selectedAccountIds.value) {
+    await deleteAccount(id);
+  }
+  selectedAccountIds.value = [];
+};
+
+const handleBatchDisable = async () => {
+  for (const id of selectedAccountIds.value) {
+    await toggleAccount(id, true);
+  }
+  selectedAccountIds.value = [];
+};
+
+const handleBatchEnable = async () => {
+  for (const id of selectedAccountIds.value) {
+    await toggleAccount(id, false);
+  }
+  selectedAccountIds.value = [];
+};
+
+const handleBatchRefresh = async () => {
+  const idsToRefresh = [...selectedAccountIds.value];
+  selectedAccountIds.value = [];
+  for (const id of idsToRefresh) {
+    await handleRefreshQuota(id);
+  }
+};
+
+const handleBatchWarmup = async () => {
+  const idsToWarmup = [...selectedAccountIds.value];
+  selectedAccountIds.value = [];
+  alert(`Warmup triggered for ${idsToWarmup.length} accounts. (Backend logic pending)`);
+};
 
 onMounted(() => {
   fetchAccounts();
@@ -207,9 +345,24 @@ const handleFileChange = async (event: Event) => {
     const data = JSON.parse(text);
     if (!Array.isArray(data)) throw new Error('Invalid format');
     const validEntries = data.filter(item => item.refresh_token && item.refresh_token.startsWith('1//'));
+    
+    // Add all accounts sequentially
     for (const entry of validEntries) {
-      await addAccount(entry.email || 'imported@account', entry.refresh_token);
+      await addAccount(entry.email || 'imported@account', entry.refresh_token, entry.last_used, entry.quota);
     }
+
+    // Automatically trigger a background quota fetch for the imported accounts
+    // We don't await this so the UI unblocks immediately and the spinners show up
+    const importedEmails = validEntries.map(e => e.email);
+    const importedAccounts = accounts.value.filter(a => importedEmails.includes(a.email));
+    
+    importedAccounts.forEach(acc => {
+      // Set the refreshing UI state manually since we are not awaiting it here
+      refreshingId.value = acc.id;
+      refreshQuota(acc.id).catch(err => console.error('Auto-refresh failed:', err)).finally(() => {
+        if (refreshingId.value === acc.id) refreshingId.value = null;
+      });
+    });
   } catch (err) {
     console.error('Failed to import JSON', err);
   } finally {
@@ -218,8 +371,73 @@ const handleFileChange = async (event: Event) => {
   }
 };
 
+const formatSubscriptionTier = (tier: string) => {
+  if (!tier) return '';
+  const t = tier.toLowerCase();
+  if (t.includes('ultra')) return 'ULTRA';
+  if (t.includes('pro')) return 'PRO';
+  return 'FREE';
+};
+
+const getTierClass = (tier: string) => {
+  if (!tier) return '';
+  const t = tier.toLowerCase();
+  if (t.includes('ultra')) return 'tier-ultra';
+  if (t.includes('pro')) return 'tier-pro';
+  return 'tier-free';
+};
+
+const getModelIcon = (name: string) => {
+  const n = name.toLowerCase();
+  if (n.includes('agent') || n.includes('oss')) return BotIcon;
+  if (n.includes('claude') || n.includes('reasoning') || n.includes('thinking')) return CpuIcon;
+  if (n.includes('flash') || n.includes('lite')) return ZapIcon;
+  return SparklesIcon;
+};
+
 const handleSwitch = async (id: string) => {
   await switchAccount(id);
+};
+
+const handleRefreshQuota = async (id: string) => {
+  if (refreshingId.value) return;
+  refreshingId.value = id;
+  try {
+    await refreshQuota(id);
+  } catch (err) {
+    console.error('Failed to refresh quota', err);
+  } finally {
+    refreshingId.value = null;
+  }
+};
+
+const handleRefreshAll = async () => {
+  for (const account of accounts.value) {
+    if (!account.isDisabled) {
+      await handleRefreshQuota(account.id);
+    }
+  }
+};
+
+const handleDeleteSingle = async (account: any) => {
+  if (confirm(`Are you sure you want to delete ${account.email}?`)) {
+    await deleteAccount(account.id);
+  }
+};
+
+const formatTimeLeft = (resetTimeStr?: string) => {
+  if (!resetTimeStr) return 'N/A';
+  const resetSecs = parseInt(resetTimeStr, 10);
+  if (isNaN(resetSecs)) return resetTimeStr;
+  
+  const now = Math.floor(Date.now() / 1000);
+  let diff = resetSecs - now;
+  if (diff <= 0) return 'Ready';
+  
+  const h = Math.floor(diff / 3600);
+  diff %= 3600;
+  const m = Math.floor(diff / 60);
+  return `${h}h ${m}m`;
 };
 </script>
 
@@ -228,9 +446,9 @@ const handleSwitch = async (id: string) => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: #1a1d24; /* Darker background similar to screenshot */
-  color: #e2e8f0;
-  font-family: 'Inter', sans-serif;
+  background-color: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-family);
   overflow: hidden;
 }
 
@@ -240,8 +458,8 @@ const handleSwitch = async (id: string) => {
   justify-content: space-between;
   align-items: center;
   padding: 12px 24px;
-  background: #1e222b;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .toolbar-left, .toolbar-right {
@@ -366,16 +584,16 @@ const handleSwitch = async (id: string) => {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.05em;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--border-color);
   position: sticky;
   top: 0;
-  background: #1a1d24;
+  background: var(--bg-secondary);
   z-index: 10;
 }
 
 .accounts-table td {
   padding: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--border-color);
   vertical-align: top;
 }
 
@@ -384,9 +602,6 @@ const handleSwitch = async (id: string) => {
 }
 .account-row:hover {
   background: rgba(255, 255, 255, 0.02);
-}
-.account-row.is-current {
-  background: rgba(59, 130, 246, 0.05); /* Slight blue tint */
 }
 
 /* Columns */
@@ -424,21 +639,31 @@ const handleSwitch = async (id: string) => {
 .email-text {
   font-size: 13px;
   font-weight: 500;
-  color: #e2e8f0;
-}
-.is-current .email-text {
-  color: #60a5fa;
+  color: var(--text-primary);
 }
 .pro-badge {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: linear-gradient(135deg, #3b82f6, #6366f1);
-  color: white;
-  font-size: 9px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 10px;
   font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+}
+.pro-badge.tier-ultra {
+  background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
+  color: white;
+}
+.pro-badge.tier-pro {
+  background: linear-gradient(135deg, #60a5fa 0%, #6366f1 100%);
+  color: white;
+}
+.pro-badge.tier-free {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
 }
 
 .quota-grid {
@@ -454,11 +679,11 @@ const handleSwitch = async (id: string) => {
 }
 .last-used-cell .date {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 .last-used-cell .time {
   font-size: 10px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .actions-group {
@@ -475,7 +700,7 @@ const handleSwitch = async (id: string) => {
 .action-btn {
   background: transparent;
   border: none;
-  color: #94a3b8;
+  color: var(--text-secondary);
   padding: 6px;
   border-radius: 6px;
   cursor: pointer;
@@ -483,7 +708,7 @@ const handleSwitch = async (id: string) => {
 }
 .action-btn:hover {
   background: rgba(255, 255, 255, 0.1);
-  color: #f8fafc;
+  color: var(--text-primary);
 }
 
 /* Modals / Forms */
@@ -508,5 +733,82 @@ const handleSwitch = async (id: string) => {
   align-items: center;
   padding: 48px;
   color: var(--text-muted);
+}
+
+/* Custom Checkbox */
+.ag-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: all 0.2s;
+  margin: 0;
+}
+.ag-checkbox:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.ag-checkbox:checked {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+.ag-checkbox:checked::after {
+  content: '';
+  position: absolute;
+  width: 4px;
+  height: 8px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  margin-top: -2px;
+}
+
+/* Color Utilities */
+.text-green-500 { color: #10b981 !important; }
+.text-blue-500 { color: #3b82f6 !important; }
+.text-red-500 { color: #ef4444 !important; }
+.text-orange-500, .text-orange { color: #f97316 !important; }
+.text-indigo { color: #6366f1 !important; }
+.text-purple { color: #a855f7 !important; }
+.text-gray { color: #9ca3af !important; }
+
+/* Batch Action Buttons */
+.btn-batch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+}
+.btn-batch:hover {
+  opacity: 0.9;
+}
+.btn-batch-delete { background: #ef4444; }
+.btn-batch-disable { background: #f97316; }
+.btn-batch-enable { background: #22c55e; }
+.btn-batch-refresh { background: #3b82f6; }
+.btn-batch-warmup { background: #a855f7; }
+
+/* Disabled Row Styling */
+.account-row.is-disabled {
+  opacity: 0.5;
+  background: rgba(0, 0, 0, 0.2);
+}
+.account-row.is-disabled .email-text {
+  text-decoration: line-through;
 }
 </style>

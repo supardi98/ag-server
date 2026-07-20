@@ -1,49 +1,19 @@
 import { FastifyInstance } from 'fastify';
 import { requireAuth } from '../middleware/requireAuth.js';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import crypto from 'crypto';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// data directory at the project root
-const dataDir = path.resolve(__dirname, '../../../data');
-const accountsFile = path.join(dataDir, 'accounts.json');
+import { getAccessTokenFromRefresh } from '../services/oauth.js';
+import { fetchLiveQuota } from '../services/quota.js';
+import { dbService } from '../services/db.js';
 
 export interface Account {
   id: string;
   email: string;
   refreshToken: string;
   isActive: boolean;
-}
-
-// Ensure data directory and accounts.json exist
-async function ensureAccountsFile() {
-  try {
-    await fs.mkdir(dataDir, { recursive: true });
-    try {
-      await fs.access(accountsFile);
-    } catch {
-      await fs.writeFile(accountsFile, JSON.stringify([]));
-    }
-  } catch (error) {
-    console.error('Failed to initialize accounts.json', error);
-  }
-}
-
-async function readAccounts(): Promise<Account[]> {
-  await ensureAccountsFile();
-  try {
-    const data = await fs.readFile(accountsFile, 'utf-8');
-    return JSON.parse(data) as Account[];
-  } catch {
-    return [];
-  }
-}
-
-async function writeAccounts(accounts: Account[]) {
-  await ensureAccountsFile();
-  await fs.writeFile(accountsFile, JSON.stringify(accounts, null, 2));
+  isDisabled?: boolean;
+  last_used?: number;
+  custom_label?: string;
+  quota?: any;
 }
 
 export async function accountsRoutes(fastify: FastifyInstance) {
@@ -58,9 +28,18 @@ export async function accountsRoutes(fastify: FastifyInstance) {
       preHandler: requireAuth,
     },
     async () => {
-      const accounts = await readAccounts();
-      // Omit refresh tokens for frontend
-      return { accounts: accounts.map(a => ({ id: a.id, email: a.email, isActive: a.isActive })) };
+      const accounts = dbService.getAllAccounts();
+      return { 
+        accounts: accounts.map(a => ({ 
+          id: a.id, 
+          email: a.email, 
+          isActive: a.isActive,
+          isDisabled: a.isDisabled,
+          last_used: a.last_used,
+          custom_label: a.custom_label,
+          quota: a.quota
+        })) 
+      };
     }
   );
 
@@ -77,33 +56,65 @@ export async function accountsRoutes(fastify: FastifyInstance) {
           properties: {
             email: { type: 'string' },
             refreshToken: { type: 'string' },
+            last_used: { type: 'number', nullable: true },
+            custom_label: { type: 'string', nullable: true },
+            quota: { type: 'object', additionalProperties: true, nullable: true },
           },
         },
       },
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      const { email, refreshToken } = request.body as { email: string; refreshToken: string };
-      const accounts = await readAccounts();
+      const { email, refreshToken, last_used, custom_label, quota } = request.body as any;
+      const accounts = dbService.getAllAccounts();
       
       const existingAccount = accounts.find(a => a.email === email);
       if (existingAccount) {
-        existingAccount.refreshToken = refreshToken;
-        await writeAccounts(accounts);
-        return { account: { id: existingAccount.id, email: existingAccount.email, isActive: existingAccount.isActive } };
+        dbService.upsertAccount({
+          ...existingAccount,
+          refreshToken,
+          last_used: last_used !== undefined ? last_used : existingAccount.last_used,
+          custom_label: custom_label !== undefined ? custom_label : existingAccount.custom_label,
+          quota: quota !== undefined ? quota : existingAccount.quota
+        });
+        
+        const updated = dbService.getAccount(existingAccount.id)!;
+        return { 
+          account: { 
+            id: updated.id, 
+            email: updated.email, 
+            isActive: updated.isActive,
+            isDisabled: updated.isDisabled,
+            last_used: updated.last_used,
+            custom_label: updated.custom_label,
+            quota: updated.quota
+          } 
+        };
       }
       
       const newAccount: Account = {
         id: crypto.randomUUID(),
         email,
         refreshToken,
-        isActive: accounts.length === 0, // Make active if it's the first account
+        isActive: accounts.length === 0,
+        last_used,
+        custom_label,
+        quota
       };
       
-      accounts.push(newAccount);
-      await writeAccounts(accounts);
+      dbService.upsertAccount(newAccount);
       
-      return { account: { id: newAccount.id, email: newAccount.email, isActive: newAccount.isActive } };
+      return { 
+        account: { 
+          id: newAccount.id, 
+          email: newAccount.email, 
+          isActive: newAccount.isActive,
+          isDisabled: newAccount.isDisabled,
+          last_used: newAccount.last_used,
+          custom_label: newAccount.custom_label,
+          quota: newAccount.quota
+        } 
+      };
     }
   );
 
@@ -126,19 +137,15 @@ export async function accountsRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { accountId } = request.body as { accountId: string };
-      const accounts = await readAccounts();
+      const account = dbService.getAccount(accountId);
       
-      const accountExists = accounts.some(a => a.id === accountId);
-      if (!accountExists) {
+      if (!account) {
         return reply.code(404).send({ error: 'Account not found' });
       }
       
-      const updatedAccounts = accounts.map(a => ({
-        ...a,
-        isActive: a.id === accountId
-      }));
+      dbService.clearActiveStatus();
+      dbService.updateAccountStatus(accountId, { isActive: true });
       
-      await writeAccounts(updatedAccounts);
       return { ok: true };
     }
   );
@@ -161,18 +168,101 @@ export async function accountsRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const accounts = await readAccounts();
       
-      const filteredAccounts = accounts.filter(a => a.id !== id);
-      
-      // If we deleted the active account, make the first one active if available
-      const hadActive = filteredAccounts.some(a => a.isActive);
-      if (!hadActive && filteredAccounts.length > 0) {
-        filteredAccounts[0].isActive = true;
+      const account = dbService.getAccount(id);
+      if (!account) {
+        return reply.code(404).send({ error: 'Account not found' });
       }
       
-      await writeAccounts(filteredAccounts);
+      dbService.deleteAccount(id);
+      
+      if (account.isActive) {
+        const remaining = dbService.getAllAccounts();
+        if (remaining.length > 0) {
+          dbService.updateAccountStatus(remaining[0].id, { isActive: true });
+        }
+      }
+      
       return { ok: true };
+    }
+  );
+
+  // POST /api/accounts/:id/refresh-quota
+  fastify.post(
+    '/api/accounts/:id/refresh-quota',
+    {
+      schema: {
+        description: 'Refresh the live quota for a specific account using its refresh token',
+        tags: ['accounts'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      
+      const account = dbService.getAccount(id);
+      if (!account) {
+        return reply.code(404).send({ error: 'Account not found' });
+      }
+
+      try {
+        const tokenRes = await getAccessTokenFromRefresh(account.refreshToken);
+        const quotaData = await fetchLiveQuota(tokenRes.access_token);
+        
+        dbService.updateAccountStatus(id, { 
+          quota: quotaData, 
+          last_used: Math.floor(Date.now() / 1000) 
+        });
+        
+        return { ok: true, quota: quotaData };
+      } catch (err: any) {
+        return reply.code(500).send({ error: err.message || 'Failed to refresh quota' });
+      }
+    }
+  );
+
+  // POST /api/accounts/:id/toggle
+  fastify.post(
+    '/api/accounts/:id/toggle',
+    {
+      schema: {
+        description: 'Enable or disable an account',
+        tags: ['accounts'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['disabled'],
+          properties: {
+            disabled: { type: 'boolean' },
+          },
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const { disabled } = request.body as { disabled: boolean };
+      
+      const account = dbService.getAccount(id);
+      if (!account) {
+        return reply.code(404).send({ error: 'Account not found' });
+      }
+      
+      dbService.updateAccountStatus(id, { isDisabled: disabled });
+      return { ok: true, isDisabled: disabled };
     }
   );
 }

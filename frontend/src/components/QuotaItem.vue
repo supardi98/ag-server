@@ -1,8 +1,8 @@
 <template>
-  <div class="quota-item group/quota">
+  <div class="quota-item group/quota" :class="itemClass" @click="copyId" :title="`Click to copy ID: ${id || name}`">
     <div class="model-info">
-      <component :is="icon" class="model-icon" />
-      <span class="model-name">{{ name }}</span>
+      <component :is="copied ? CheckIcon : icon" class="model-icon" :class="copied ? 'text-green-400' : iconClass" />
+      <span class="model-name" :class="{'font-mono': isRawName, 'text-green-400': copied}">{{ copied ? 'Copied ID!' : name }}</span>
     </div>
     <div class="quota-stats">
       <span class="time-left">
@@ -15,21 +15,49 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import { Clock as ClockIcon } from 'lucide-vue-next';
+import { ref, computed } from 'vue';
+import { Clock as ClockIcon, Check as CheckIcon } from 'lucide-vue-next';
 
 const props = defineProps<{
+  id?: string;
   name: string;
   icon: any;
   timeLeft: string;
   percentage: number;
 }>();
 
+const copied = ref(false);
+
+const copyId = () => {
+  const textToCopy = props.id || props.name;
+  navigator.clipboard.writeText(textToCopy).then(() => {
+    copied.value = true;
+    setTimeout(() => {
+      copied.value = false;
+    }, 1500);
+  }).catch(console.error);
+};
+
+const isRawName = computed(() => props.name.includes('-') || props.name.includes('_'));
+
 const percentageColor = computed(() => {
-  if (props.percentage > 80) return 'text-red-500';
-  if (props.percentage > 50) return 'text-orange-500';
-  if (props.percentage === 0) return 'text-red-500'; // based on screenshot where 0% is red
-  return 'text-green-500';
+  if (props.percentage === 0) return 'text-red-500';
+  if (props.percentage >= 100) return 'text-green-400';
+  return 'text-emerald-400';
+});
+
+const itemClass = computed(() => {
+  if (props.percentage === 0) return 'bg-red-tint border-red text-muted';
+  if (props.percentage >= 100) return 'bg-green-tint border-green';
+  return 'bg-dark-green-tint border-dark-green';
+});
+
+const iconClass = computed(() => {
+  const n = props.name.toLowerCase();
+  if (n.includes('image') || n.includes('high')) return 'text-colorful';
+  if (n.includes('agent') || n.includes('oss')) return 'text-gray-400';
+  if (n.includes('claude') || n.includes('reasoning')) return 'text-orange-400';
+  return 'text-blue-400';
 });
 </script>
 
@@ -39,59 +67,77 @@ const percentageColor = computed(() => {
   align-items: center;
   justify-content: space-between;
   padding: 4px 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
   transition: all 0.2s;
   min-width: 140px;
+  border: 1px solid transparent;
+  cursor: pointer;
 }
 
+/* Dynamic Backgrounds */
+.bg-red-tint { background: rgba(239, 68, 68, 0.1); }
+.border-red { border-color: rgba(239, 68, 68, 0.2); }
+.bg-green-tint { background: rgba(16, 185, 129, 0.15); }
+.border-green { border-color: rgba(16, 185, 129, 0.3); }
+.bg-dark-green-tint { background: rgba(16, 185, 129, 0.05); }
+.border-dark-green { border-color: rgba(16, 185, 129, 0.1); }
+
 .quota-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  filter: brightness(1.2);
 }
 
 .model-info {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--text-secondary);
+  color: #e2e8f0;
 }
 
 .model-icon {
-  width: 14px;
-  height: 14px;
-  opacity: 0.8;
+  width: 13px;
+  height: 13px;
 }
+
+.text-colorful { color: #38bdf8; }
+.text-gray-400 { color: #94a3b8; }
+.text-orange-400 { color: #fb923c; }
+.text-blue-400 { color: #60a5fa; }
 
 .model-name {
   font-weight: 500;
   white-space: nowrap;
 }
+.font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10.5px;
+}
 
 .quota-stats {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
 .time-left {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: #fbbf24; /* yellow/amber for time */
-  font-family: monospace;
+  color: #fbbf24;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10.5px;
 }
 
 .percentage {
   font-weight: 700;
-  font-family: monospace;
-  width: 28px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  width: 32px;
   text-align: right;
+  font-size: 10.5px;
 }
 
 /* Color overrides */
 .text-red-500 { color: #ef4444; }
-.text-orange-500 { color: #f97316; }
-.text-green-500 { color: #10b981; }
+.text-green-400 { color: #34d399; }
+.text-emerald-400 { color: #10b981; }
 </style>

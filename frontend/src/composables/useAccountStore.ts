@@ -4,6 +4,10 @@ export interface Account {
   id: string;
   email: string;
   isActive: boolean;
+  isDisabled?: boolean;
+  last_used?: number;
+  custom_label?: string;
+  quota?: any;
 }
 
 // Global state
@@ -29,14 +33,14 @@ export function useAccountStore() {
     }
   };
 
-  const addAccount = async (email: string, refreshToken: string) => {
+  const addAccount = async (email: string, refreshToken: string, last_used?: number, quota?: any) => {
     loading.value = true;
     error.value = null;
     try {
       const res = await fetch('/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, refreshToken }),
+        body: JSON.stringify({ email, refreshToken, last_used, quota }),
       });
       if (!res.ok) throw new Error('Failed to add account');
       await fetchAccounts();
@@ -84,6 +88,42 @@ export function useAccountStore() {
     }
   };
 
+  const refreshQuota = async (accountId: string) => {
+    loading.value = true;
+    error.value = null;
+    try {
+      const res = await fetch(`/api/accounts/${accountId}/refresh-quota`, {
+        method: 'POST',
+      });
+      if (!res.ok) throw new Error('Failed to refresh quota');
+      await fetchAccounts(); // Refresh the list
+    } catch (err: any) {
+      error.value = err.message;
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  };
+
+  const toggleAccount = async (accountId: string, disabled: boolean) => {
+    loading.value = true;
+    error.value = null;
+    try {
+      const res = await fetch(`/api/accounts/${accountId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disabled }),
+      });
+      if (!res.ok) throw new Error('Failed to toggle account');
+      await fetchAccounts();
+    } catch (err: any) {
+      error.value = err.message;
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  };
+
   return {
     accounts,
     currentAccount,
@@ -93,5 +133,7 @@ export function useAccountStore() {
     addAccount,
     switchAccount,
     deleteAccount,
+    refreshQuota,
+    toggleAccount,
   };
 }
