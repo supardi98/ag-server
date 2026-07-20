@@ -17,6 +17,8 @@ import {
   File as FileIcon,
   Wrench as WrenchIcon,
   Loader2 as SpinnerIcon,
+  Menu as MenuIcon,
+  ChevronLeft as ChevronLeftIcon,
 } from 'lucide-vue-next';
 import { marked } from 'marked';
 import AgButton from '../components/AgButton.vue';
@@ -1016,6 +1018,8 @@ watch(activeConversationId, async (newId) => {
     return;
   }
   
+  showMobileWorkspace.value = true;
+  
   // Navigate if the route is not already set
   if (route.params.id !== newId) {
     router.push(`/conversation/${newId}`);
@@ -1449,18 +1453,26 @@ onUnmounted(() => {
   document.removeEventListener('click', closeAllDropdowns);
   document.removeEventListener('click', onSortClickOutside);
 });
+const showMobileWorkspace = ref(false);
 </script>
 
 <template>
-  <div class="antigravity-view">
+  <div class="antigravity-view" :class="{ 'mobile-show-workspace': showMobileWorkspace }">
     <!-- Sidebar for conversations/sessions -->
     <aside class="sessions-sidebar">
       <div class="sidebar-top-actions">
+        <button
+          class="mobile-close-sidebar-icon"
+          @click="showMobileWorkspace = true"
+          title="Close Menu"
+        >
+          <XIcon size="20" />
+        </button>
         <AgButton
           variant="primary"
           class="w-full new-conv-btn"
           :disabled="!status?.cdpConnected"
-          @click="activeConversationId = null; router.push('/')"
+          @click="activeConversationId = null; showMobileWorkspace = true; router.push('/')"
         >
           <PlusIcon class="btn-icon-svg" /> New Conversation
         </AgButton>
@@ -1565,7 +1577,7 @@ onUnmounted(() => {
                 :key="conv.id"
                 class="conv-item"
                 :class="{ 'conv-item--active': activeConversationId === conv.id }"
-                @click="activeConversationId = conv.id"
+                @click="activeConversationId = conv.id; showMobileWorkspace = true;"
               >
                 <ConversationIcon class="conv-icon" />
                 <span class="conv-title">
@@ -1585,7 +1597,7 @@ onUnmounted(() => {
             <button
               class="add-conv-btn"
               title="New conversation"
-              @click="activeConversationId = null; router.push('/')"
+              @click="activeConversationId = null; showMobileWorkspace = true; router.push('/')"
             >
               <PlusIcon class="add-conv-icon" />
             </button>
@@ -1601,7 +1613,7 @@ onUnmounted(() => {
             :key="conv.id"
             class="conv-item"
             :class="{ 'conv-item--active': activeConversationId === conv.id }"
-            @click="activeConversationId = conv.id"
+            @click="activeConversationId = conv.id; showMobileWorkspace = true;"
           >
             <ConversationIcon class="conv-icon" />
             <span class="conv-title">
@@ -1619,6 +1631,9 @@ onUnmounted(() => {
       <!-- Top Workspace Context Header -->
       <header class="workspace-header" v-if="activeConversationId">
         <div class="header-left">
+          <button class="mobile-back-btn" @click="showMobileWorkspace = false" title="Back to menu">
+            <MenuIcon size="20" />
+          </button>
           <div class="header-details">
             <h3 v-if="activeConversationDetails">
               <template v-if="activeConversationDetails.projectName">{{ activeConversationDetails.projectName }} / </template>
@@ -1637,7 +1652,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Chat Area (Visible when a conversation is active) -->
-        <div v-else-if="activeConversationId" class="workspace-chat-layout">
+        <div v-else-if="activeConversationId" class="workspace-chat-layout" :class="{ 'file-preview-open': showRightSidebar }">
           <!-- Chat History View -->
           <div class="chat-container">
             <div 
@@ -2113,6 +2128,9 @@ onUnmounted(() => {
             
             <!-- Folder workspace selector dropdown -->
             <div class="onboarding-workspace-header-wrapper">
+              <button class="mobile-back-btn onboarding-back-btn" @click="showMobileWorkspace = false" title="Back to menu">
+                <MenuIcon size="20" />
+              </button>
               <div class="onboarding-workspace-header" @click.stop="showWorkspaceDropdown = !showWorkspaceDropdown">
                 <FolderOpenIcon class="onboarding-folder-icon" />
                 <span class="onboarding-folder-name">{{ activeSelectedProject?.name || 'ag-server' }}</span>
@@ -2327,6 +2345,7 @@ onUnmounted(() => {
   flex-direction: column;
   flex-shrink: 0;
   padding: 16px;
+  position: relative;
 }
 
 .sidebar-top-actions {
@@ -3545,11 +3564,22 @@ onUnmounted(() => {
 }
 
 .user-message .message-content {
-  overflow-wrap: break-word;
-  word-break: break-all; /* Break long unbroken strings like base64 */
+  overflow-wrap: anywhere;
+  word-break: break-word; /* Prevents breaking standard words, but breaks long URLs */
   max-height: 400px;
   overflow-y: auto;
   padding-right: 4px; /* for scrollbar */
+}
+
+.user-message .message-content :deep(a) {
+  color: #a5b4fc; /* Light indigo */
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.2s;
+}
+
+.user-message .message-content :deep(a:hover) {
+  color: #c7d2fe;
 }
 
 .user-message .message-header .sender-name {
@@ -4651,6 +4681,99 @@ onUnmounted(() => {
 @keyframes slideIn {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .antigravity-view {
+    flex-direction: column;
+  }
+  .sessions-sidebar {
+    width: 100%;
+    height: 100%;
+    border-right: none;
+    border-bottom: none;
+  }
+  .workspace-area {
+    display: none;
+    width: 100%;
+    height: 100%;
+    flex: 1;
+  }
+
+  .antigravity-view.mobile-show-workspace .sessions-sidebar {
+    display: none;
+  }
+  .antigravity-view.mobile-show-workspace .workspace-area {
+    display: flex;
+  }
+  
+  .mobile-back-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 4px;
+    margin-right: 8px;
+    cursor: pointer;
+    position: absolute;
+    left: 24px;
+  }
+  .onboarding-back-btn {
+    left: 0;
+  }
+  
+  .mobile-close-sidebar-icon {
+    display: flex;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    z-index: 10;
+    padding: 8px;
+    margin-bottom: 8px;
+    align-self: flex-start;
+  }
+  
+  .sidebar-top-actions {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  /* Center text on mobile headers */
+  .workspace-header {
+    position: relative;
+    justify-content: center;
+  }
+  
+  .onboarding-workspace-header-wrapper {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    width: 100%;
+  }
+  
+  .workspace-header .header-left {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* Full screen right sidebar on mobile */
+  .workspace-chat-layout.file-preview-open .chat-container {
+    display: none;
+  }
+  .workspace-chat-layout.file-preview-open .right-file-sidebar {
+    width: 100%;
+    border-left: none;
+  }
+}
+@media (min-width: 769px) {
+  .mobile-back-btn,
+  .mobile-close-sidebar-icon {
+    display: none !important;
+  }
 }
 </style>
 
