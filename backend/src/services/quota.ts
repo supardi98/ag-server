@@ -96,6 +96,12 @@ export async function fetchLiveQuota(accessToken: string): Promise<QuotaData> {
         if (data.models) {
           for (const [name, info] of Object.entries<any>(data.models)) {
             const lowerName = name.toLowerCase();
+            
+            // Exclude unwanted internal models
+            if (lowerName.includes('tab_jump_flash') || lowerName.includes('tab_flash_lite') || lowerName.includes('tab_')) {
+              continue;
+            }
+
             if (lowerName.includes('gemini') || lowerName.includes('claude') || lowerName.includes('gpt') || lowerName.includes('image') || lowerName.includes('3.1') || lowerName.includes('flash')) {
               const quotaInfo = info.quotaInfo;
               if (quotaInfo) {

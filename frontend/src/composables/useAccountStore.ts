@@ -124,6 +124,39 @@ export function useAccountStore() {
     }
   };
 
+  const exportAccounts = async (ids?: string[]) => {
+    try {
+      const res = await fetch('/api/accounts/export', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ ids })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        
+        // Trigger file download
+        const blob = new Blob([JSON.stringify(data.accounts, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const dateStr = new Date().toISOString().split('T')[0];
+        a.download = `ag_accounts_export_${dateStr}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } else {
+        alert('Failed to export accounts');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error exporting accounts');
+    }
+  };
+
   return {
     accounts,
     currentAccount,
@@ -135,5 +168,6 @@ export function useAccountStore() {
     deleteAccount,
     refreshQuota,
     toggleAccount,
+    exportAccounts,
   };
 }

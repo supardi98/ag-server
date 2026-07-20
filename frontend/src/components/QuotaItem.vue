@@ -1,5 +1,5 @@
 <template>
-  <div class="quota-item group/quota" :class="itemClass" @click="copyId" :title="`Click to copy ID: ${id || name}`">
+  <div class="quota-item group/quota" :class="itemClass" :style="progressStyle" @click="copyId" :title="`Click to copy ID: ${id || name}`">
     <div class="model-info">
       <component :is="copied ? CheckIcon : icon" class="model-icon" :class="copied ? 'text-green-400' : iconClass" />
       <span class="model-name" :class="{'font-mono': isRawName, 'text-green-400': copied}">{{ copied ? 'Copied ID!' : name }}</span>
@@ -47,9 +47,20 @@ const percentageColor = computed(() => {
 });
 
 const itemClass = computed(() => {
-  if (props.percentage === 0) return 'bg-red-tint border-red text-muted';
-  if (props.percentage >= 100) return 'bg-green-tint border-green';
-  return 'bg-dark-green-tint border-dark-green';
+  if (props.percentage === 0) return 'border-red text-muted';
+  if (props.percentage >= 100) return 'border-green';
+  return 'border-dark-green';
+});
+
+const progressStyle = computed(() => {
+  let activeColor = 'rgba(16, 185, 129, 0.15)'; // Dark green tint for active
+  if (props.percentage === 0) activeColor = 'rgba(239, 68, 68, 0.15)';
+  else if (props.percentage >= 100) activeColor = 'rgba(16, 185, 129, 0.25)';
+  
+  const inactiveColor = 'rgba(255, 255, 255, 0.03)';
+  return {
+    background: `linear-gradient(to right, ${activeColor} ${props.percentage}%, ${inactiveColor} ${props.percentage}%)`
+  };
 });
 
 const iconClass = computed(() => {
@@ -75,12 +86,9 @@ const iconClass = computed(() => {
   cursor: pointer;
 }
 
-/* Dynamic Backgrounds */
-.bg-red-tint { background: rgba(239, 68, 68, 0.1); }
+/* Dynamic Borders */
 .border-red { border-color: rgba(239, 68, 68, 0.2); }
-.bg-green-tint { background: rgba(16, 185, 129, 0.15); }
 .border-green { border-color: rgba(16, 185, 129, 0.3); }
-.bg-dark-green-tint { background: rgba(16, 185, 129, 0.05); }
 .border-dark-green { border-color: rgba(16, 185, 129, 0.1); }
 
 .quota-item:hover {

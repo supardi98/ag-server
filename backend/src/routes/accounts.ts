@@ -118,6 +118,38 @@ export async function accountsRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // POST /api/accounts/export
+  fastify.post(
+    '/api/accounts/export',
+    {
+      schema: {
+        description: 'Export accounts as JSON',
+        tags: ['accounts'],
+        body: {
+          type: 'object',
+          properties: {
+            ids: { type: 'array', items: { type: 'string' }, nullable: true }
+          }
+        }
+      },
+      preHandler: requireAuth,
+    },
+    async (request) => {
+      const { ids } = request.body as { ids?: string[] } || {};
+      const allAccounts = dbService.getAllAccounts();
+      const exportData = ids && ids.length > 0 
+        ? allAccounts.filter(a => ids.includes(a.id))
+        : allAccounts;
+
+      return { 
+        accounts: exportData.map(a => ({
+          email: a.email,
+          refresh_token: a.refreshToken
+        }))
+      };
+    }
+  );
+
   // POST /api/accounts/switch
   fastify.post(
     '/api/accounts/switch',
