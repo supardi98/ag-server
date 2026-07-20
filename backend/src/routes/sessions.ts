@@ -600,6 +600,28 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
       reply.raw.setHeader('Connection', 'keep-alive');
       reply.raw.flushHeaders();
 
+      // Immediately send the last known snapshot/status
+      const cached = cdpService.getCachedSnapshot();
+      if (cached) {
+        reply.raw.write(`data: ${JSON.stringify({ cdpSnapshot: cached })}\n\n`);
+      }
+
+      const onSnapshot = (snapshot: any) => {
+        reply.raw.write(`data: ${JSON.stringify({ cdpSnapshot: snapshot })}\n\n`);
+      };
+      
+      const onStatus = (status: any) => {
+        reply.raw.write(`data: ${JSON.stringify({ cdpStatus: status })}\n\n`);
+      };
+
+      cdpService.on('snapshot', onSnapshot);
+      cdpService.on('status', onStatus);
+
+      request.raw.on('close', () => {
+        cdpService.off('snapshot', onSnapshot);
+        cdpService.off('status', onStatus);
+      });
+
       streamLsConnect('ProjectUpdatesStream', {
         // Depending on LS, typically it just streams all updates or accepts a specific cascade/project
         // but typically ProjectUpdatesStream is global. We will stream everything and let frontend filter.
@@ -607,6 +629,41 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
       
       // Keep connection open
       await new Promise(() => {});
+    }
+  );
+
+  // POST /api/conversations/:id/upload — Upload an image to the Antigravity instance via CDP
+  fastify.post(
+    '/api/conversations/:id/upload',
+    {
+      schema: {
+        description: 'Upload an image via base64 JSON payload to the active session',
+        tags: ['conversations'],
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }
+          }
+        },
+        body: {
+          type: 'object',
+          required: ['base64', 'mimeType', 'name'],
+          properties: {
+            base64: { type: 'string' },
+            mimeType: { type: 'string' },
+            name: { type: 'string' }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { base64, mimeType, name } = request.body as { base64: string; mimeType: string; name: string };
+      
+      const result = await cdpService.uploadImage(base64, mimeType, name);
+      if (!result.ok) {
+        return reply.code(500).send({ error: `Upload failed: ${result.reason}` });
+      }
+      return { ok: true };
     }
   );
 }

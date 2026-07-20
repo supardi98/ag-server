@@ -64,6 +64,22 @@ const loadedStart = ref(0);
 const totalSteps = ref(0);
 const loadingOlder = ref(false);
 
+// Agent streaming/typing state
+const agentTyping = ref(false);
+const rawHtml = ref('');
+const rawCss = ref('');
+
+// Dynamic style injector for captured CSS
+const updateDynamicStyles = (cssString: string) => {
+  let styleEl = document.getElementById('ag-dynamic-styles');
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    styleEl.id = 'ag-dynamic-styles';
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent = cssString;
+};
+
 // Right Sidebar File Preview State
 const showRightSidebar = ref(false);
 const sidebarFileContent = ref('');
@@ -1036,20 +1052,40 @@ watch(activeConversationId, async (newId) => {
   activeEventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      // Example of handling ProjectUpdatesStream frames.
-      // Usually it sends full step updates or state changes.
-      // Since it's complex, we can just trigger a reload of steps for now 
-      // or append if it's a new step. Let's trigger silent reload to ensure consistency.
-      if (data && !data.error) {
-        loadActiveConversationSteps(newId);
+      
+      // Handle real-time CDP snapshots (the ag2r way)
+      if (data.cdpSnapshot) {
+        agentTyping.value = data.cdpSnapshot.agentRunning;
+        rawHtml.value = data.cdpSnapshot.html || '';
+        if (data.cdpSnapshot.css && data.cdpSnapshot.css !== rawCss.value) {
+          rawCss.value = data.cdpSnapshot.css;
+          updateDynamicStyles(data.cdpSnapshot.css);
+        }
+      } else if (data.cdpStatus) {
+        agentTyping.value = data.cdpStatus.agentRunning;
+      }
+      
+      // Handle standard LS stream updates
+      if (data && !data.error && !data.cdpSnapshot && !data.cdpStatus) {
+        // Only trigger a full reload if the agent isn't currently streaming raw HTML,
+        // to avoid heavy re-renders during active typing.
+        if (!agentTyping.value) {
+          loadActiveConversationSteps(newId);
+        }
       }
     } catch (e) {
       console.error('SSE Message error', e);
     }
   };
+
+  // Listen for the 'end' event to stop the typing indicator
+  activeEventSource.addEventListener('end', () => {
+    agentTyping.value = false;
+  });
   
   activeEventSource.onerror = (err) => {
     console.error('SSE Error', err);
+    agentTyping.value = false;
     // Don't close, let browser auto-reconnect
   };
 });
@@ -1061,6 +1097,7 @@ onBeforeUnmount(() => {
   if (activeEventSource) {
     activeEventSource.close();
   }
+  agentTyping.value = false;
 });
 
 // Chat input states
@@ -1072,6 +1109,49 @@ const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const newChatPrompt = ref('');
 const initSending = ref(false);
 const onboardingInputRef = ref<HTMLTextAreaElement | null>(null);
+
+// Staged images state for Ctrl+V paste
+export interface StagedImage {
+  id: string;
+  dataUrl: string;
+  file: File;
+  base64: string;
+  mimeType: string;
+  name: string;
+}
+const stagedImages = ref<StagedImage[]>([]);
+
+const handlePaste = async (e: ClipboardEvent) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const dataUrl = event.target?.result as string;
+        const base64 = dataUrl.split(',')[1];
+        
+        stagedImages.value.push({
+          id: Math.random().toString(36).slice(2),
+          dataUrl,
+          base64,
+          file,
+          mimeType: file.type,
+          name: file.name || `image_${Date.now()}.png`
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+};
+
+const removeStagedImage = (id: string) => {
+  stagedImages.value = stagedImages.value.filter(img => img.id !== id);
+};
 
 // Interactive Dropdown States
 const selectedProjectUri = ref('');
@@ -1148,13 +1228,53 @@ const loadActiveConversationSteps = async (id: string) => {
 };
 
 const handleSendChat = async () => {
-  if (!activeConversationId.value || !chatInputText.value.trim() || chatSending.value) return;
+  if (!activeConversationId.value || chatSending.value) return;
+  // allow empty prompt if there are staged images
+  if (!chatInputText.value.trim() && stagedImages.value.length === 0) return;
 
   const prompt = chatInputText.value.trim();
   chatInputText.value = '';
   chatSending.value = true;
+  
+  // Keep a reference to staged images to upload
+  const imagesToUpload = [...stagedImages.value];
+  stagedImages.value = [];
+
+  // Optimistically append the user message to UI
+  const optimisticStep = {
+    _isOptimistic: true, // flag to identify this step
+    stepIndex: 999999 + Math.floor(Math.random() * 1000), // fake high index
+    type: 'CORTEX_STEP_TYPE_USER_INPUT',
+    userInput: {
+      userResponse: prompt || '[Attached Image]',
+      items: [{ text: prompt || '[Attached Image]' }]
+    },
+    metadata: {
+      createdAt: new Date().toISOString()
+    }
+  };
+  activeConvSteps.value.push(optimisticStep);
+  nextTick(() => scrollToBottom());
 
   try {
+    // 1. Upload all staged images one by one
+    for (const img of imagesToUpload) {
+      await fetch(`/api/conversations/${activeConversationId.value}/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base64: img.base64,
+          mimeType: img.mimeType,
+          name: img.name
+        })
+      });
+      // A small delay to let AG process the drop event before sending text
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // 2. Send the chat prompt (even if empty, AG might just process the image)
+    // Actually, AG usually requires some text or an Enter keypress to trigger send.
+    // If prompt is empty but we uploaded an image, we still trigger chat.
     const res = await fetch(`/api/conversations/${activeConversationId.value}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1163,9 +1283,16 @@ const handleSendChat = async () => {
     
     if (!res.ok) {
       console.error('Failed to send prompt to backend');
+      // Remove optimistic step on failure
+      activeConvSteps.value = activeConvSteps.value.filter(s => !s._isOptimistic);
+    } else {
+      // Transition to agent typing state
+      agentTyping.value = true;
     }
   } catch (err) {
     console.error('Chat execution error', err);
+    // Remove optimistic step on error
+    activeConvSteps.value = activeConvSteps.value.filter(s => !s._isOptimistic);
   } finally {
     chatSending.value = false;
     nextTick(() => {
@@ -1175,11 +1302,15 @@ const handleSendChat = async () => {
 };
 
 const handleInitNewConversation = async () => {
-  if (!newChatPrompt.value.trim() || initSending.value) return;
+  if (initSending.value) return;
+  if (!newChatPrompt.value.trim() && stagedImages.value.length === 0) return;
 
   const prompt = newChatPrompt.value.trim();
   newChatPrompt.value = '';
   initSending.value = true;
+  
+  const imagesToUpload = [...stagedImages.value];
+  stagedImages.value = [];
 
   // Find selected workspace folder
   const activeProj = activeSelectedProject.value;
@@ -1194,12 +1325,25 @@ const handleInitNewConversation = async () => {
       },
       body: JSON.stringify({ folderUri })
     });
-
     if (!initRes.ok) throw new Error('Failed to start cascade');
     const { cascadeId } = await initRes.json();
 
     if (cascadeId) {
-      // 2. Send prompt as the first message
+      // 2. Upload staged images for the new conversation
+      for (const img of imagesToUpload) {
+        await fetch(`/api/conversations/${cascadeId}/upload`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base64: img.base64,
+            mimeType: img.mimeType,
+            name: img.name
+          })
+        });
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      // 3. Send prompt as the first message
       await fetch(`/api/conversations/${cascadeId}/chat`, {
         method: 'POST',
         headers: {
@@ -1207,9 +1351,6 @@ const handleInitNewConversation = async () => {
         },
         body: JSON.stringify({ prompt, modelId: activeModelId.value })
       });
-
-      // 3. Sync project conversations lists
-      await fetchProjects();
 
       // 4. Redirect route to the new conversation
       activeConversationId.value = cascadeId;
@@ -1397,192 +1538,215 @@ onUnmounted(() => {
                 <span>Loading older steps...</span>
               </div>
 
-              <div v-for="(group, gIdx) in groupedSteps" :key="gIdx" class="chat-step-group">
-                
-                <!-- USER MESSAGE BUBBLE -->
-                <template v-if="group.type === 'user'">
-                  <div class="chat-step">
-                    <div class="message-bubble user-message">
-                      <div class="message-header">
-                        <span class="sender-name">User</span>
-                        <span class="message-time">{{ formatMessageTime(group.step.metadata?.createdAt) }}</span>
+              <template v-for="(group, gIdx) in groupedSteps" :key="'group-' + gIdx">
+                <div 
+                  class="chat-step-group" 
+                  v-if="!(agentTyping && rawHtml && group.type === 'response' && gIdx === groupedSteps.length - 1)"
+                >
+                  
+                  <!-- USER MESSAGE BUBBLE -->
+                  <template v-if="group.type === 'user'">
+                    <div class="chat-step">
+                      <div class="message-bubble user-message">
+                        <div class="message-header">
+                          <span class="sender-name">User</span>
+                          <span class="message-time">{{ formatMessageTime(group.step.metadata?.createdAt) }}</span>
+                        </div>
+                        <div class="message-content" v-html="renderMarkdown(group.step.userInput.userResponse || group.step.userInput.items?.[0]?.text)"></div>
                       </div>
-                      <div class="message-content" v-html="renderMarkdown(group.step.userInput.userResponse || group.step.userInput.items?.[0]?.text)"></div>
                     </div>
-                  </div>
-                </template>
+                  </template>
 
-                <!-- ASSISTANT RESPONSE BUBBLE (Consolidated turn block) -->
-                <template v-else-if="group.type === 'response'">
-                  <div class="chat-step">
-                    <div class="message-bubble assistant-message">
-                      <div class="message-header">
-                        <div class="header-left-meta">
-                          <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
-                          <span class="sender-name">Antigravity</span>
-                          <span class="step-badge" v-if="group.responseSteps.length > 0">
-                            Step {{ group.responseSteps[0].stepIndex }}
+                  <!-- ASSISTANT RESPONSE BUBBLE (Consolidated turn block) -->
+                  <template v-else-if="group.type === 'response'">
+                    <div class="chat-step">
+                      <div class="message-bubble assistant-message">
+                        <div class="message-header">
+                          <div class="header-left-meta">
+                            <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
+                            <span class="sender-name">Antigravity</span>
+                            <span class="step-badge" v-if="group.responseSteps.length > 0">
+                              Step {{ group.responseSteps[0].stepIndex }}
+                            </span>
+                          </div>
+                          <span class="message-time">
+                            {{ formatMessageTime(group.step?.metadata?.createdAt) }}
                           </span>
                         </div>
-                        <span class="message-time">
-                          {{ formatMessageTime(group.step?.metadata?.createdAt) }}
-                        </span>
-                      </div>
-                      
-                      <!-- Nested Processing/Tool Steps inside the Bubble ("Worked for Ns") -->
-                      <div v-if="group.processingSteps.length > 0" class="worker-group-container">
-                        <button 
-                          class="worker-toggle-bar"
-                          :class="{ 'worker-toggle-bar--expanded': expandedProcessingGroups.has(gIdx) }"
-                          @click="toggleProcessingGroup(gIdx)"
-                        >
-                          <span class="worker-duration-title">Worked for {{ getWorkerSummary(group).durationSeconds }}s</span>
-                          <component 
-                            :is="expandedProcessingGroups.has(gIdx) ? ChevronUpIcon : ChevronDownIcon" 
-                            class="worker-toggle-chevron" 
-                          />
-                        </button>
+                        
+                        <!-- Nested Processing/Tool Steps inside the Bubble ("Worked for Ns") -->
+                        <div v-if="group.processingSteps.length > 0" class="worker-group-container">
+                          <button 
+                            class="worker-toggle-bar"
+                            :class="{ 'worker-toggle-bar--expanded': expandedProcessingGroups.has(gIdx) }"
+                            @click="toggleProcessingGroup(gIdx)"
+                          >
+                            <span class="worker-duration-title">Worked for {{ getWorkerSummary(group).durationSeconds }}s</span>
+                            <component 
+                              :is="expandedProcessingGroups.has(gIdx) ? ChevronUpIcon : ChevronDownIcon" 
+                              class="worker-toggle-chevron" 
+                            />
+                          </button>
 
-                        <div v-if="expandedProcessingGroups.has(gIdx)" class="worker-details-list">
-                          <!-- Chronological workers action flow matching Gambar 1 -->
-                          <template v-for="(step, lidx) in [...group.processingSteps, ...group.responseSteps]" :key="lidx">
-                            
-                            <!-- 1. GREP SEARCH -->
-                            <div v-if="step.type === 'CORTEX_STEP_TYPE_GREP_SEARCH'" class="worker-flow-step">
-                              <div class="flow-item-wrapper">
-                                <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
-                                  <span class="flow-action-text">Searched <span class="highlight-mono">{{ getSearchMeta(step).query }}</span></span>
-                                  <span v-if="getSearchMeta(step).resultsCount" class="results-badge">{{ getSearchMeta(step).resultsCount }} results</span>
-                                  <component 
-                                    :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
-                                    class="flow-row-chevron" 
-                                  />
-                                </div>
-                                <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
-                                  <pre class="sub-step-details-code"><code>{{ getSubStepDetails(step) }}</code></pre>
-                                </div>
-                              </div>
-                            </div>
-
-                            <!-- 2. VIEW FILE -->
-                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_VIEW_FILE'" class="worker-flow-step">
-                              <div class="flow-item-wrapper">
-                                <div class="flow-row-header" @click="openFileInSidebar(getViewFileMeta(step).path)">
-                                  <span class="flow-action-text">
-                                    Analyzed 
-                                    <span class="file-link-accent">
-                                      <FileIcon class="inline-file-icon" />
-                                      {{ getViewFileMeta(step).name }}
-                                    </span>
-                                    <span class="range-mono">{{ getViewFileMeta(step).range }}</span>
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-
-                            <!-- 3. THOUGHT BLOCK / THINKING -->
-                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && step.plannerResponse?.thinking" class="worker-flow-step">
-                              <div class="flow-item-wrapper">
-                                <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
-                                  <span class="flow-action-text">Thought for 1s</span>
-                                  <component 
-                                    :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
-                                    class="flow-row-chevron" 
-                                  />
-                                </div>
-                                <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
-                                  <div class="nested-thinking-box">
-                                    <div class="thinking-title">Thinking Process</div>
-                                    <div class="thinking-content" v-html="renderMarkdown(step.plannerResponse.thinking)"></div>
+                          <div v-if="expandedProcessingGroups.has(gIdx)" class="worker-details-list">
+                            <!-- Chronological workers action flow matching Gambar 1 -->
+                            <template v-for="(step, lidx) in [...group.processingSteps, ...group.responseSteps]" :key="lidx">
+                              
+                              <!-- 1. GREP SEARCH -->
+                              <div v-if="step.type === 'CORTEX_STEP_TYPE_GREP_SEARCH'" class="worker-flow-step">
+                                <div class="flow-item-wrapper">
+                                  <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                    <span class="flow-action-text">Searched <span class="highlight-mono">{{ getSearchMeta(step).query }}</span></span>
+                                    <span v-if="getSearchMeta(step).resultsCount" class="results-badge">{{ getSearchMeta(step).resultsCount }} results</span>
+                                    <component 
+                                      :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                      class="flow-row-chevron" 
+                                    />
+                                  </div>
+                                  <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                    <pre class="sub-step-details-code"><code>{{ getSubStepDetails(step) }}</code></pre>
                                   </div>
                                 </div>
                               </div>
-                            </div>
 
-                            <!-- 4. CODE MODIFICATIONS / EDITED -->
-                            <div v-else-if="(step.type === 'CORTEX_STEP_TYPE_CODE_ACKNOWLEDGEMENT' || step.codeAcknowledgement) && getFileChangeMeta(step).hasChange" class="worker-flow-step">
-                              <div class="flow-item-wrapper">
-                                <div class="flow-row-header" @click="openFileInSidebar(getFileChangeMeta(step).filePath)">
-                                  <span class="flow-action-text">
-                                    Edited 
-                                    <span class="file-link-accent">
-                                      <FileIcon class="inline-file-icon" />
-                                      {{ getFileChangeMeta(step).fileName }}
+                              <!-- 2. VIEW FILE -->
+                              <div v-else-if="step.type === 'CORTEX_STEP_TYPE_VIEW_FILE'" class="worker-flow-step">
+                                <div class="flow-item-wrapper">
+                                  <div class="flow-row-header" @click="openFileInSidebar(getViewFileMeta(step).path)">
+                                    <span class="flow-action-text">
+                                      Analyzed 
+                                      <span class="file-link-accent">
+                                        <FileIcon class="inline-file-icon" />
+                                        {{ getViewFileMeta(step).name }}
+                                      </span>
+                                      <span class="range-mono">{{ getViewFileMeta(step).range }}</span>
                                     </span>
-                                    <span class="worker-badge-lines">
-                                      <span class="badge-added">+{{ getFileChangeMeta(step).addedLines }}</span>
-                                      <span class="badge-deleted">-{{ getFileChangeMeta(step).deletedLines }}</span>
-                                    </span>
-                                  </span>
+                                  </div>
                                 </div>
                               </div>
-                            </div>
 
-                            <!-- 5. RAN COMMAND -->
-                            <div v-else-if="step.type === 'CORTEX_STEP_TYPE_RUN_COMMAND' || step.runCommand" class="worker-flow-step">
-                              <div class="flow-item-wrapper">
-                                <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
-                                  <span class="flow-action-text">Ran <span class="highlight-mono">{{ step.runCommand?.commandLine || JSON.parse(step.metadata?.argumentsJson || '{}').CommandLine }}</span></span>
-                                  <component 
-                                    :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
-                                    class="flow-row-chevron" 
-                                  />
-                                </div>
-                                <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
-                                  <pre class="terminal-log-output"><code>{{ getCommandLogs(step) }}</code></pre>
+                              <!-- 3. THOUGHT BLOCK / THINKING -->
+                              <div v-else-if="step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && step.plannerResponse?.thinking" class="worker-flow-step">
+                                <div class="flow-item-wrapper">
+                                  <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                    <span class="flow-action-text">Thought for 1s</span>
+                                    <component 
+                                      :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                      class="flow-row-chevron" 
+                                    />
+                                  </div>
+                                  <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                    <div class="nested-thinking-box">
+                                      <div class="thinking-title">Thinking Process</div>
+                                      <div class="thinking-content" v-html="renderMarkdown(step.plannerResponse.thinking)"></div>
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
+
+                              <!-- 4. CODE MODIFICATIONS / EDITED -->
+                              <div v-else-if="(step.type === 'CORTEX_STEP_TYPE_CODE_ACKNOWLEDGEMENT' || step.codeAcknowledgement) && getFileChangeMeta(step).hasChange" class="worker-flow-step">
+                                <div class="flow-item-wrapper">
+                                  <div class="flow-row-header" @click="openFileInSidebar(getFileChangeMeta(step).filePath)">
+                                    <span class="flow-action-text">
+                                      Edited 
+                                      <span class="file-link-accent">
+                                        <FileIcon class="inline-file-icon" />
+                                        {{ getFileChangeMeta(step).fileName }}
+                                      </span>
+                                      <span class="worker-badge-lines">
+                                        <span class="badge-added">+{{ getFileChangeMeta(step).addedLines }}</span>
+                                        <span class="badge-deleted">-{{ getFileChangeMeta(step).deletedLines }}</span>
+                                      </span>
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- 5. RAN COMMAND -->
+                              <div v-else-if="step.type === 'CORTEX_STEP_TYPE_RUN_COMMAND' || step.runCommand" class="worker-flow-step">
+                                <div class="flow-item-wrapper">
+                                  <div class="flow-row-header" @click="toggleSubStep(getSubStepKey(gIdx, lidx))">
+                                    <span class="flow-action-text">Ran <span class="highlight-mono">{{ step.runCommand?.commandLine || JSON.parse(step.metadata?.argumentsJson || '{}').CommandLine }}</span></span>
+                                    <component 
+                                      :is="expandedSubSteps.has(getSubStepKey(gIdx, lidx)) ? ChevronUpIcon : ChevronDownIcon" 
+                                      class="flow-row-chevron" 
+                                    />
+                                  </div>
+                                  <div v-if="expandedSubSteps.has(getSubStepKey(gIdx, lidx))" class="flow-row-details">
+                                    <pre class="terminal-log-output"><code>{{ getCommandLogs(step) }}</code></pre>
+                                  </div>
+                                </div>
+                              </div>
+                            </template>
+                          </div>
+                        </div>
+
+                        <!-- Loop and render all thinking processes and responses in chronological sequence inside this turn -->
+                        <div class="consolidated-responses-flow">
+                          <template v-for="turnStep in group.responseSteps" :key="turnStep.stepIndex">
+                            <div v-if="turnStep.plannerResponse?.response" class="response-turn-segment">
+                              <div class="message-content" v-html="renderMarkdown(turnStep.plannerResponse.response)"></div>
                             </div>
                           </template>
                         </div>
-                      </div>
 
-                      <!-- Loop and render all thinking processes and responses in chronological sequence inside this turn -->
-                      <div class="consolidated-responses-flow">
-                        <template v-for="turnStep in group.responseSteps" :key="turnStep.stepIndex">
-                          <div v-if="turnStep.plannerResponse?.response" class="response-turn-segment">
-                            <div class="message-content" v-html="renderMarkdown(turnStep.plannerResponse.response)"></div>
+                        <!-- Integrated File Change Review Bar at the bottom of the bubble -->
+                        <div v-if="getGroupFileChangeMeta(group).hasChange" class="review-bar-container">
+                          <div class="review-bar-header" @click="toggleReviewStep(getGroupFileChangeMeta(group).sourceStep.stepIndex)">
+                            <span class="file-change-info">
+                              1 file changed
+                              <span class="lines-added">+{{ getGroupFileChangeMeta(group).addedLines }}</span>
+                              <span class="lines-deleted">-{{ getGroupFileChangeMeta(group).deletedLines }}</span>
+                            </span>
+                            <div class="header-right-actions">
+                              <button class="review-action-btn" @click.stop="openDiffInSidebar(getGroupFileChangeMeta(group).sourceStep)">
+                                <svg class="review-btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
+                                Review
+                              </button>
+                              <component 
+                                :is="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex) ? ChevronUpIcon : ChevronDownIcon" 
+                                class="review-chevron" 
+                              />
+                            </div>
                           </div>
-                        </template>
-                      </div>
 
-                      <!-- Integrated File Change Review Bar at the bottom of the bubble -->
-                      <div v-if="getGroupFileChangeMeta(group).hasChange" class="review-bar-container">
-                        <div class="review-bar-header" @click="toggleReviewStep(getGroupFileChangeMeta(group).sourceStep.stepIndex)">
-                          <span class="file-change-info">
-                            1 file changed
-                            <span class="lines-added">+{{ getGroupFileChangeMeta(group).addedLines }}</span>
-                            <span class="lines-deleted">-{{ getGroupFileChangeMeta(group).deletedLines }}</span>
-                          </span>
-                          <div class="header-right-actions">
-                            <button class="review-action-btn" @click.stop="openDiffInSidebar(getGroupFileChangeMeta(group).sourceStep)">
-                              <svg class="review-btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
-                              Review
-                            </button>
-                            <component 
-                              :is="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex) ? ChevronUpIcon : ChevronDownIcon" 
-                              class="review-chevron" 
-                            />
-                          </div>
-                        </div>
-
-                        <!-- Expandable details -->
-                        <div v-if="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex)" class="review-bar-body">
-                          <div class="review-file-row" @click="openFileInSidebar(getGroupFileChangeMeta(group).filePath)">
-                            <FileIcon class="review-file-icon" />
-                            <span class="review-file-name">{{ getGroupFileChangeMeta(group).fileName }}</span>
+                          <!-- Expandable details -->
+                          <div v-if="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex)" class="review-bar-body">
+                            <div class="review-file-row" @click="openFileInSidebar(getGroupFileChangeMeta(group).filePath)">
+                              <FileIcon class="review-file-icon" />
+                              <span class="review-file-name">{{ getGroupFileChangeMeta(group).fileName }}</span>
+                            </div>
                           </div>
                         </div>
-                      </div>
 
+                      </div>
+                    </div>
+                  </template>
+
+                </div>
+              </template>
+              
+              <!-- Live Streaming Bubble Clone from Antigravity -->
+              <div class="chat-step-group" v-if="agentTyping && rawHtml">
+                <div class="chat-step">
+                  <div class="message-bubble assistant-message">
+                    <div class="message-header">
+                      <div class="header-left-meta">
+                        <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
+                        <span class="sender-name">Antigravity</span>
+                        <span class="step-badge animate-pulse">Running...</span>
+                      </div>
+                    </div>
+                    <div class="message-content">
+                      <div class="ag-raw-clone ag-raw-clone-isolated" v-html="rawHtml"></div>
                     </div>
                   </div>
-                </template>
-
+                </div>
               </div>
 
-              <!-- Typing Indicator when chat is sending -->
-              <div class="chat-step-group" v-if="chatSending">
+              <!-- Typing Indicator when chat is sending or agent is streaming -->
+              <div class="chat-step-group" v-if="chatSending || (agentTyping && !rawHtml)">
                 <div class="chat-step">
                   <div class="message-bubble assistant-message typing-bubble">
                     <div class="message-header">
@@ -1592,6 +1756,7 @@ onUnmounted(() => {
                       </div>
                     </div>
                     <div class="typing-indicator">
+                      <span class="typing-label">{{ chatSending ? 'Sending...' : 'is thinking...' }}</span>
                       <span class="dot"></span>
                       <span class="dot"></span>
                       <span class="dot"></span>
@@ -1608,6 +1773,16 @@ onUnmounted(() => {
 
             <!-- Premium Cursor/Gemini-style Chat Input Bar -->
             <div class="chat-input-wrapper">
+              <!-- Staged images preview strip -->
+              <div v-if="stagedImages.length > 0" class="staged-images-strip">
+                <div v-for="img in stagedImages" :key="img.id" class="staged-image-item">
+                  <img :src="img.dataUrl" class="staged-img-thumb" />
+                  <button class="remove-img-btn" @click="removeStagedImage(img.id)">
+                    <XIcon class="remove-img-icon" />
+                  </button>
+                </div>
+              </div>
+
               <div 
                 class="chat-input-box" 
                 :class="{ 
@@ -1618,10 +1793,11 @@ onUnmounted(() => {
                 <textarea
                   ref="chatInputRef"
                   v-model="chatInputText"
-                  placeholder="Ask anything, @ to mention, / for actions"
+                  placeholder="Ask anything, @ to mention, / for actions (Paste images with Ctrl+V)"
                   :disabled="chatSending"
                   rows="1"
                   @keydown.enter.prevent="handleSendChat"
+                  @paste="handlePaste"
                 />
                 
                 <div class="chat-input-actions-row">
@@ -1663,12 +1839,12 @@ onUnmounted(() => {
 
                   <button 
                     class="send-mic-btn"
-                    :class="{ 'send-mic-btn--active': chatInputText.trim().length > 0 }"
+                    :class="{ 'send-mic-btn--active': chatInputText.trim().length > 0 || stagedImages.length > 0 }"
                     :disabled="chatSending"
                     @click="handleSendChat"
                   >
                     <!-- Mic Icon if input is empty -->
-                    <svg v-if="chatInputText.trim().length === 0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                    <svg v-if="chatInputText.trim().length === 0 && stagedImages.length === 0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
                     <!-- Send/Arrow Icon if input has text -->
                     <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                   </button>
@@ -1764,18 +1940,30 @@ onUnmounted(() => {
             </div>
 
             <!-- Premium Input box for onboarding -->
-            <div 
-              class="onboarding-input-box"
-              :class="{ 'chat-input-box--running': initSending }"
-            >
-              <textarea
-                ref="onboardingInputRef"
-                v-model="newChatPrompt"
-                placeholder="Ask anything, @ to mention, / for actions"
-                :disabled="initSending"
-                rows="1"
-                @keydown.enter.prevent="handleInitNewConversation"
-              />
+            <div class="chat-input-wrapper">
+              <!-- Staged images preview strip -->
+              <div v-if="stagedImages.length > 0" class="staged-images-strip">
+                <div v-for="img in stagedImages" :key="img.id" class="staged-image-item">
+                  <img :src="img.dataUrl" class="staged-img-thumb" />
+                  <button class="remove-img-btn" @click="removeStagedImage(img.id)">
+                    <XIcon class="remove-img-icon" />
+                  </button>
+                </div>
+              </div>
+
+              <div 
+                class="onboarding-input-box"
+                :class="{ 'chat-input-box--running': initSending }"
+              >
+                <textarea
+                  ref="onboardingInputRef"
+                  v-model="newChatPrompt"
+                  placeholder="Ask anything, @ to mention, / for actions (Paste images with Ctrl+V)"
+                  :disabled="initSending"
+                  rows="1"
+                  @keydown.enter.prevent="handleInitNewConversation"
+                  @paste="handlePaste"
+                />
               
               <div class="onboarding-actions-row">
                 <div class="onboarding-left-actions">
@@ -1820,7 +2008,7 @@ onUnmounted(() => {
                   :disabled="initSending"
                   @click="handleInitNewConversation"
                 >
-                  <svg v-if="newChatPrompt.trim().length === 0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                  <svg v-if="newChatPrompt.trim().length === 0 && stagedImages.length === 0" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
                   <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 </button>
               </div>
@@ -1887,6 +2075,7 @@ onUnmounted(() => {
       </template>
     </AgModal>
   </div>
+</div>
 </template>
 
 <style scoped>
@@ -2887,6 +3076,57 @@ onUnmounted(() => {
   padding: 16px 20px 20px 20px;
   background: linear-gradient(180deg, rgba(11, 15, 25, 0) 0%, #0b0f19 60%);
   border-top: 1px solid rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+}
+
+.staged-images-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-left: 8px;
+}
+
+.staged-image-item {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #111827;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.staged-img-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.remove-img-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  border-radius: 50%;
+  padding: 2px;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.remove-img-btn:hover {
+  background: rgba(239, 68, 68, 0.8);
+}
+
+.remove-img-icon {
+  width: 12px;
+  height: 12px;
 }
 
 .chat-input-box {
@@ -3085,18 +3325,24 @@ onUnmounted(() => {
 .typing-indicator {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: 4px 0;
+}
+.typing-label {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-right: 2px;
+  font-style: italic;
 }
 .typing-indicator .dot {
   width: 6px;
   height: 6px;
-  background-color: var(--text-muted);
+  background-color: var(--color-primary);
   border-radius: 50%;
   animation: typing 1.4s infinite ease-in-out both;
 }
-.typing-indicator .dot:nth-child(1) { animation-delay: -0.32s; }
-.typing-indicator .dot:nth-child(2) { animation-delay: -0.16s; }
+.typing-indicator .dot:nth-child(2) { animation-delay: -0.32s; }
+.typing-indicator .dot:nth-child(3) { animation-delay: -0.16s; }
 @keyframes typing {
   0%, 80%, 100% { transform: scale(0); opacity: 0.5; }
   40% { transform: scale(1); opacity: 1; }
@@ -4063,6 +4309,51 @@ onUnmounted(() => {
 
 .file-code-block::-webkit-scrollbar-thumb:hover {
   background: rgba(99, 102, 241, 0.4);
+}
+
+/* Markdown Table Styles */
+:deep(.message-content table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 14px;
+}
+
+:deep(.message-content th),
+:deep(.message-content td) {
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  padding: 8px 12px;
+  text-align: left;
+}
+
+:deep(.message-content th) {
+  background-color: rgba(255, 255, 255, 0.05);
+  font-weight: 600;
+}
+
+:deep(.message-content tr:nth-child(even)) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Isolated raw clone: only show the last message bubble from the Antigravity container */
+.ag-raw-clone-isolated {
+  display: flex;
+  flex-direction: column;
+}
+
+:deep(.ag-raw-clone-isolated > *:not(:last-child)) {
+  display: none !important;
+}
+
+/* Ensure the last child takes full width and matches our bubble styling */
+:deep(.ag-raw-clone-isolated > *:last-child) {
+  width: 100% !important;
+  max-width: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
 }
 
 @keyframes slideIn {
