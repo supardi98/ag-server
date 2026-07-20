@@ -975,10 +975,37 @@ const handleChatScroll = async () => {
   }
 };
 
+const fetchModels = async () => {
+  try {
+    const res = await fetch('/api/models');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.models && data.models.length > 0) {
+        availableModels.value = data.models.map((m: any) => ({
+          name: m.label,
+          id: m.modelId,
+          tag: m.isBeta ? 'Beta' : (m.isRecommended ? 'Fast' : undefined)
+        }));
+        
+        // Auto-select a fast flash model as default if possible to avoid quota issues
+        const defaultFlash = availableModels.value.find((m: any) => m.name.toLowerCase().includes('flash') && m.name.toLowerCase().includes('low'));
+        if (defaultFlash) {
+          activeModelId.value = defaultFlash.id;
+          activeModelName.value = defaultFlash.name;
+        } else {
+          activeModelId.value = availableModels.value[0].id;
+          activeModelName.value = availableModels.value[0].name;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to fetch models:', err);
+  }
+};
 
 onMounted(async () => {
   await Promise.all([fetchStatus(), fetchAgentStatus()]);
-  await Promise.all([fetchSessions(), fetchProjects()]);
+  await Promise.all([fetchSessions(), fetchProjects(), fetchModels()]);
   document.addEventListener('click', onSortClickOutside);
   
   // Set initial conversation if routing directly
@@ -1167,7 +1194,7 @@ const removeStagedImage = (id: string) => {
 // Interactive Dropdown States
 const selectedProjectUri = ref('');
 const activeModelName = ref('Gemini 3.5 Flash (Low)');
-const activeModelId = ref('MODEL_PLACEHOLDER_M26');
+const activeModelId = ref('gemini-3.5-flash-low');
 const activeContextScope = ref('Local');
 
 const showWorkspaceDropdown = ref(false);
@@ -1181,16 +1208,7 @@ const activeSelectedProject = computed(() => {
   return sortedProjects.value.find(p => p.folderUri === selectedProjectUri.value) || sortedProjects.value[0];
 });
 
-const availableModels = [
-  { name: 'Gemini 3.5 Flash (Medium)', id: 'gemini-3.5-flash-medium', tag: 'Fast' },
-  { name: 'Gemini 3.5 Flash (High)', id: 'gemini-3.5-flash-high', tag: 'Fast' },
-  { name: 'Gemini 3.5 Flash (Low)', id: 'MODEL_PLACEHOLDER_M26', tag: 'Fast' },
-  { name: 'Gemini 3.1 Pro (Low)', id: 'gemini-3.1-pro-low' },
-  { name: 'Gemini 3.1 Pro (High)', id: 'gemini-3.1-pro-high' },
-  { name: 'Claude Sonnet 4.6 (Thinking)', id: 'claude-sonnet-4.6' },
-  { name: 'Claude Opus 4.6 (Thinking)', id: 'claude-opus-4.6' },
-  { name: 'GPT-OSS 120B (Medium)', id: 'gpt-oss-120b', warning: true }
-];
+const availableModels = ref<any[]>([]);
 
 const availableScopes = ['Local', 'Web', 'Workspace'];
 
@@ -1398,7 +1416,12 @@ const handleInitNewConversation = async () => {
         body: JSON.stringify({ prompt, modelId: activeModelId.value })
       });
 
-      // 4. Redirect route to the new conversation
+      // 4. Trigger backend cache refresh and fetch updated projects list
+      fetch('/api/projects/refresh', { method: 'POST' }).then(() => {
+        setTimeout(fetchProjects, 1500); // slight delay to allow LS to index the new conversation
+      });
+
+      // 5. Redirect route to the new conversation
       activeConversationId.value = cascadeId;
       router.push(`/conversation/${cascadeId}`);
     }

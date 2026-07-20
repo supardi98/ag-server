@@ -213,6 +213,12 @@ interface ProjectsCache {
 let projectsCache: ProjectsCache | null = null;
 let isFetching = false;
 
+function normUri(uri: string): string {
+  if (!uri) return '';
+  try { return decodeURIComponent(uri).toLowerCase().replace(/\/+$/, ''); }
+  catch { return uri.toLowerCase().replace(/\/+$/, ''); }
+}
+
 async function fetchProjectsData(): Promise<any> {
   const [streamFrames, jetboxFrames] = await Promise.all([
     callLsStream('ProjectUpdatesStream', {}, 5000),
@@ -249,7 +255,22 @@ async function fetchProjectsData(): Promise<any> {
     .filter((p): p is NonNullable<typeof p> => p !== null)
     .map((project) => {
       const conversations = Object.entries(summaries)
-        .filter(([_, info]: [string, any]) => info?.trajectoryMetadata?.projectId === project.id)
+        .filter(([id, info]: [string, any]) => {
+          const pid = info?.trajectoryMetadata?.projectId;
+          if (pid) return pid === project.id;
+          
+          // Fallback matching by workspace folder URI for newly created conversations via StartCascade
+          const ws = info?.workspaces?.[0];
+          const wsUri = ws?.workspaceFolderAbsoluteUri;
+          const nWsUri = normUri(wsUri);
+          const nProjUri = normUri(project.folderUri);
+          const match = wsUri && nWsUri === nProjUri;
+          
+          if (!pid) {
+             console.log(`[Sessions] Eval ${id.substring(0,6)}... wsUri="${wsUri}" -> nWsUri="${nWsUri}" vs nProjUri="${nProjUri}". Match? ${match}`);
+          }
+          return match;
+        })
         .map(([id, info]: [string, any]) => ({
           id,
           title: info.summary || 'Untitled Conversation',
@@ -393,6 +414,34 @@ export async function sessionsRoutes(fastify: FastifyInstance) {
         return reply.code(400).send(res);
       }
       return res;
+    }
+  );
+
+  // GET /api/models — Fetch available IDE models
+  fastify.get(
+    '/api/models',
+    {
+      schema: {
+        description: 'Get list of models supported by the IDE',
+        tags: ['models'],
+      },
+      preHandler: requireAuth,
+    },
+    async () => {
+      try {
+        const result = await callLsApi('GetCascadeModelConfigData', {});
+        const configs = (result.clientModelConfigs || []).filter((m: any) => m.disabled !== true);
+        const models = configs.map((m: any) => ({
+          label: m.label,
+          modelId: m.modelOrAlias?.model || m.modelOrAlias?.alias || '',
+          isRecommended: !!m.isRecommended,
+          isBeta: !!m.isBeta,
+          quota: m.quotaInfo?.remainingFraction ?? 1
+        }));
+        return { models };
+      } catch (err: any) {
+        return { models: [] };
+      }
     }
   );
 
