@@ -333,8 +333,6 @@ const getGroupFileChangeMeta = (group: StepGroup) => {
     filePath: '',
     addedLines: 0,
     deletedLines: 0,
-    isImplementationPlan: false,
-    planSummary: '',
     sourceStep: null as any
   };
 
@@ -349,10 +347,6 @@ const getGroupFileChangeMeta = (group: StepGroup) => {
       result.addedLines += meta.addedLines;
       result.deletedLines += meta.deletedLines;
       result.sourceStep = step;
-      if (meta.isImplementationPlan) {
-        result.isImplementationPlan = true;
-        result.planSummary = meta.planSummary || '';
-      }
     }
   }
 
@@ -589,7 +583,6 @@ const openFileInSidebar = async (filePath: string) => {
   sidebarFileName.value = filePath.split('/').pop() || 'File';
   sidebarFileLoading.value = true;
   showRightSidebar.value = true;
-  activeDiffMode.value = false;
   sidebarFileContent.value = '';
 
   try {
@@ -619,8 +612,6 @@ interface FileChangeMeta {
   filePath: string;
   addedLines: number;
   deletedLines: number;
-  isImplementationPlan?: boolean;
-  planSummary?: string;
 }
 
 const getFileChangeMeta = (step: any): FileChangeMeta => {
@@ -630,8 +621,6 @@ const getFileChangeMeta = (step: any): FileChangeMeta => {
     filePath: '',
     addedLines: 0,
     deletedLines: 0,
-    isImplementationPlan: false,
-    planSummary: ''
   };
 
   const toolCalls = step.plannerResponse?.toolCalls;
@@ -675,11 +664,6 @@ const getFileChangeMeta = (step: any): FileChangeMeta => {
         // Fallback default values if parsing returned 0 (e.g. initial file write)
         meta.addedLines = added || 12;
         meta.deletedLines = deleted || 4;
-
-        if (args.ArtifactMetadata) {
-          meta.isImplementationPlan = args.ArtifactMetadata.RequestFeedback === true;
-          meta.planSummary = args.ArtifactMetadata.Summary || '';
-        }
       }
     } catch {
       // Ignore JSON parse errors
@@ -1781,54 +1765,30 @@ onUnmounted(() => {
                         </div>
 
                         <!-- Integrated File Change Review Bar at the bottom of the bubble -->
-                        <div v-if="getGroupFileChangeMeta(group).hasChange">
-                          
-                          <!-- Implementation Plan Card -->
-                          <div v-if="getGroupFileChangeMeta(group).isImplementationPlan" class="implementation-plan-card">
-                            <div class="impl-card-header">
-                              <FileIcon class="impl-icon" size="18" />
-                              <span class="impl-title">Implementation Plan</span>
-                            </div>
-                            <div class="impl-card-body">
-                              <p>{{ getGroupFileChangeMeta(group).planSummary || 'Review the proposed implementation plan.' }}</p>
-                              <div class="impl-actions">
-                                <AgButton variant="primary" @click="handleSendChat('Proceed', activeConvSteps[activeConvSteps.length - 1].sourceStep)">
-                                  Proceed <span class="kbd-shortcut">Ctrl+&crarr;</span>
-                                </AgButton>
-                                <AgButton variant="secondary" @click.stop="openFileInSidebar(getGroupFileChangeMeta(group).filePath)">
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
-                                  Review
-                                </AgButton>
-                              </div>
+                        <div v-if="getGroupFileChangeMeta(group).hasChange" class="review-bar-container">
+                          <div class="review-bar-header" @click="toggleReviewStep(getGroupFileChangeMeta(group).sourceStep.stepIndex)">
+                            <span class="file-change-info">
+                              1 file changed
+                              <span class="lines-added">+{{ getGroupFileChangeMeta(group).addedLines }}</span>
+                              <span class="lines-deleted">-{{ getGroupFileChangeMeta(group).deletedLines }}</span>
+                            </span>
+                            <div class="header-right-actions">
+                              <button class="review-action-btn" @click.stop="openDiffInSidebar(getGroupFileChangeMeta(group).sourceStep)">
+                                <svg class="review-btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
+                                Review
+                              </button>
+                              <component 
+                                :is="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex) ? ChevronUpIcon : ChevronDownIcon" 
+                                class="review-chevron" 
+                              />
                             </div>
                           </div>
 
-                          <!-- Regular Review Bar -->
-                          <div v-else class="review-bar-container">
-                            <div class="review-bar-header" @click="toggleReviewStep(getGroupFileChangeMeta(group).sourceStep.stepIndex)">
-                              <span class="file-change-info">
-                                1 file changed
-                                <span class="lines-added">+{{ getGroupFileChangeMeta(group).addedLines }}</span>
-                                <span class="lines-deleted">-{{ getGroupFileChangeMeta(group).deletedLines }}</span>
-                              </span>
-                              <div class="header-right-actions">
-                                <button class="review-action-btn" @click.stop="openDiffInSidebar(getGroupFileChangeMeta(group).sourceStep)">
-                                  <svg class="review-btn-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
-                                  Review
-                                </button>
-                                <component 
-                                  :is="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex) ? ChevronUpIcon : ChevronDownIcon" 
-                                  class="review-chevron" 
-                                />
-                              </div>
-                            </div>
-
-                            <!-- Expandable details -->
-                            <div v-if="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex)" class="review-bar-body">
-                              <div class="review-file-row" @click="openFileInSidebar(getGroupFileChangeMeta(group).filePath)">
-                                <FileIcon class="review-file-icon" />
-                                <span class="review-file-name">{{ getGroupFileChangeMeta(group).fileName }}</span>
-                              </div>
+                          <!-- Expandable details -->
+                          <div v-if="expandedReviewSteps.has(getGroupFileChangeMeta(group).sourceStep.stepIndex)" class="review-bar-body">
+                            <div class="review-file-row" @click="openFileInSidebar(getGroupFileChangeMeta(group).filePath)">
+                              <FileIcon class="review-file-icon" />
+                              <span class="review-file-name">{{ getGroupFileChangeMeta(group).fileName }}</span>
                             </div>
                           </div>
                         </div>
@@ -3807,60 +3767,7 @@ onUnmounted(() => {
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
 
-/* Implementation Plan Card Styles */
-.implementation-plan-card {
-  margin-top: 16px;
-  background: var(--card-bg-elevated);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.impl-card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.impl-title {
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--text-primary);
-}
-
-.impl-icon {
-  color: var(--text-muted);
-}
-
-.impl-card-body {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.impl-card-body p {
-  margin: 0;
-  font-size: 14px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
-.impl-actions {
-  display: flex;
-  justify-content: flex-start;
-  gap: 12px;
-}
-
-.kbd-shortcut {
-  opacity: 0.6;
-  font-size: 11px;
-  margin-left: 8px;
-  font-weight: normal;
-}
+/* File Change Review Bar Styles */
 .review-bar-container {
   display: flex;
   flex-direction: column;
