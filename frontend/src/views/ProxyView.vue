@@ -1,7 +1,7 @@
 <template>
   <div class="page-container">
     <header class="page-header">
-      <h2><span class="icon-link">🔗</span> Multi-Protocol Support</h2>
+      <h2><span class="icon-link"><LinkIcon /></span> Multi-Protocol Support</h2>
       <p class="subtitle">Seamlessly integrate with your favorite AI tools and CLIs</p>
       <p class="description">The local proxy supports OpenAI, Anthropic, and Gemini protocols, ensuring compatibility with a wide range of applications.</p>
     </header>
@@ -50,13 +50,15 @@
       </div>
     </div>
 
-    <!-- Models & Integration Row -->
-    <div class="models-integration-row">
+    <!-- Models & Integration Tabs -->
+    <div class="models-integration-container">
+      <div class="tabs-header-container">
+        <h3 :class="{'active-tab': activeTab === 'models'}" @click="activeTab = 'models'">>_ SUPPORTED MODELS</h3>
+        <h3 :class="{'active-tab': activeTab === 'integration'}" @click="activeTab = 'integration'">>_ QUICK INTEGRATION</h3>
+      </div>
+
       <!-- Supported Models List -->
-      <div class="models-section">
-        <div class="models-header">
-          <h3>>_ Supported Models & Integration</h3>
-        </div>
+      <div v-show="activeTab === 'models'" class="models-section">
         <div class="models-table-container">
           <table class="models-table">
             <thead>
@@ -90,9 +92,9 @@
       </div>
 
       <!-- Quick Integration Section -->
-      <div class="integration-section">
+      <div v-show="activeTab === 'integration'" class="integration-section">
         <div class="integration-header">
-          <h3 class="integration-title">QUICK INTEGRATION</h3>
+          <h3 class="integration-title">Integration Code</h3>
           <select class="integration-select" v-model="integrationType">
             <option value="python">Python (OpenAI SDK)</option>
             <option value="cli">CLI (cURL)</option>
@@ -102,6 +104,15 @@
           <button class="copy-code-btn" @click="copyIntegrationCode">Copy Code</button>
           <pre class="code-block"><code>{{ integrationCode }}</code></pre>
         </div>
+        <div class="test-section" style="margin-top: 16px;">
+          <button class="run-test-btn" @click="runTest" :disabled="isTesting">
+            <span v-if="!isTesting">▶ Run Test</span>
+            <span v-else>Running...</span>
+          </button>
+          <div v-if="testResult" class="test-result-container">
+            <pre class="test-result">{{ testResult }}</pre>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -110,7 +121,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useAccountStore } from '../composables/useAccountStore';
+import { Link as LinkIcon } from 'lucide-vue-next';
 
+const activeTab = ref('models');
 const accountStore = useAccountStore();
 const { accounts, fetchAccounts } = accountStore;
 
@@ -159,11 +172,11 @@ response = client.chat.completions.create(
 
 print(response.choices[0].message.content)`;
   } else if (integrationType.value === 'cli') {
-    return `curl ${baseUrl}/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-proxy-api-key" \
+    return `curl ${baseUrl}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer your-proxy-api-key" \\
   -d '{
-    "model": "gemini-1.5-pro",
+    "model": "gemini-2.5-flash",
     "messages": [{"role": "user", "content": "Hello"}]
   }'`;
   }
@@ -173,6 +186,34 @@ print(response.choices[0].message.content)`;
 const copyIntegrationCode = () => {
   navigator.clipboard.writeText(integrationCode.value);
 };
+
+const isTesting = ref(false);
+const testResult = ref('');
+
+const runTest = async () => {
+  isTesting.value = true;
+  testResult.value = '';
+  try {
+    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer your-proxy-api-key'
+      },
+      body: JSON.stringify({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Hello! Please reply with exactly "Hello World".' }]
+      })
+    });
+    
+    const data = await res.json();
+    testResult.value = JSON.stringify(data, null, 2);
+  } catch (err: any) {
+    testResult.value = `Error: ${err.message}`;
+  } finally {
+    isTesting.value = false;
+  }
+};
 </script>
 
 <style scoped>
@@ -180,7 +221,8 @@ const copyIntegrationCode = () => {
   padding: 32px;
   background-color: var(--bg-default);
   color: var(--text-primary);
-  min-height: 100%;
+  height: 100%;
+  overflow-y: auto;
 }
 .page-header {
   margin-bottom: 24px;
@@ -193,7 +235,14 @@ const copyIntegrationCode = () => {
   gap: 8px;
 }
 .icon-link {
-  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+}
+.icon-link svg {
+  width: 24px;
+  height: 24px;
 }
 .subtitle {
   color: var(--text-muted);
@@ -288,20 +337,41 @@ const copyIntegrationCode = () => {
 }
 
 /* Models & Integration Row */
-.models-integration-row {
+.models-integration-container {
   display: flex;
-  gap: 24px;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 16px;
 }
-@media (max-width: 1024px) {
-  .models-integration-row {
-    flex-direction: column;
-  }
+
+.tabs-header-container {
+  display: flex;
+  gap: 32px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 8px;
+}
+
+.tabs-header-container h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding-bottom: 12px;
+  margin: 0;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+.tabs-header-container h3:hover {
+  color: var(--text-primary);
+}
+
+.tabs-header-container h3.active-tab {
+  color: #3b82f6;
+  border-bottom: 2px solid #3b82f6;
 }
 
 /* Models Section */
 .models-section {
-  flex: 1;
   background: var(--card-bg-elevated);
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -361,7 +431,6 @@ const copyIntegrationCode = () => {
 
 /* Quick Integration Section */
 .integration-section {
-  flex: 0 0 400px;
   background: var(--card-bg-elevated);
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -429,5 +498,50 @@ const copyIntegrationCode = () => {
 .copy-code-btn:hover {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
+}
+
+.test-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.run-test-btn {
+  align-self: flex-start;
+  padding: 8px 16px;
+  background: var(--primary-color, #4f46e5);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.run-test-btn:hover:not(:disabled) {
+  background: var(--primary-hover, #4338ca);
+  transform: translateY(-1px);
+}
+.run-test-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.test-result-container {
+  background: #1e1e2e;
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+}
+.test-result {
+  margin: 0;
+  font-family: monospace;
+  font-size: 13px;
+  color: #a6accd;
+  white-space: pre-wrap;
 }
 </style>

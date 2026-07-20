@@ -58,3 +58,29 @@ body {
 button, input, textarea {
   font-family: inherit;
 }
+
+/* Global Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  border: 2px solid var(--bg-primary); /* create padding effect */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+/* For Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
