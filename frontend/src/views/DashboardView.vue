@@ -1214,6 +1214,23 @@ const allConversations = computed(() => {
   });
 });
 
+const activeConversationDetails = computed(() => {
+  if (!activeConversationId.value) return null;
+  // Search in projects
+  for (const p of projects.value) {
+    const conv = p.conversations?.find((c: any) => c.id === activeConversationId.value);
+    if (conv) {
+      return { projectName: p.name, title: conv.title };
+    }
+  }
+  // Search in unassigned
+  const unassigned = unassignedConversations.value.find((c: any) => c.id === activeConversationId.value);
+  if (unassigned) {
+    return { projectName: null, title: unassigned.title };
+  }
+  return null;
+});
+
 const activeSelectedProject = computed(() => {
   if (!selectedProjectUri.value && sortedProjects.value.length > 0) {
     return sortedProjects.value[0];
@@ -1626,10 +1643,12 @@ onUnmounted(() => {
       <!-- Top Workspace Context Header -->
       <header class="workspace-header" v-if="activeConversationId">
         <div class="header-left">
-          <ConversationIcon class="header-icon-svg" />
           <div class="header-details">
-            <h3>Conversation Session</h3>
-            <span class="header-sub">{{ activeConversationId }}</span>
+            <h3 v-if="activeConversationDetails">
+              <template v-if="activeConversationDetails.projectName">{{ activeConversationDetails.projectName }} / </template>
+              {{ activeConversationDetails.title }}
+            </h3>
+            <h3 v-else>Conversation Session</h3>
           </div>
         </div>
       </header>
@@ -1668,7 +1687,7 @@ onUnmounted(() => {
                     <div class="chat-step">
                       <div class="message-bubble user-message">
                         <div class="message-header">
-                          <span class="sender-name">User</span>
+                          <span class="sender-name">You</span>
                           <span class="message-time">{{ formatMessageTime(group.step.metadata?.createdAt) }}</span>
                         </div>
                         <div class="message-content">
@@ -1711,9 +1730,6 @@ onUnmounted(() => {
                           <div class="header-left-meta">
                             <img src="/ag2r-icon.png" width="16" height="16" class="ag-avatar-icon" alt="AG" @error="(e) => (e.target as HTMLElement).style.display = 'none'" />
                             <span class="sender-name">Antigravity</span>
-                            <span class="step-badge" v-if="group.responseSteps.length > 0">
-                              Step {{ group.responseSteps[0].stepIndex }}
-                            </span>
                           </div>
                           <span class="message-time">
                             {{ formatMessageTime(group.step?.metadata?.createdAt) }}
@@ -2751,7 +2767,7 @@ onUnmounted(() => {
 }
 
 .workspace-header {
-  height: 64px;
+  height: 48px;
   border-bottom: 1px solid var(--border-color);
   padding: 0 24px;
   display: flex;
@@ -2773,8 +2789,8 @@ onUnmounted(() => {
 }
 
 .header-details h3 {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-primary);
 }
 
@@ -2787,7 +2803,7 @@ onUnmounted(() => {
 .workspace-content-grid {
   display: flex;
   flex-direction: column;
-  padding: 24px;
+  padding: 0;
   overflow: hidden;
   flex: 1;
   min-height: 0;
